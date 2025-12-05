@@ -26,6 +26,7 @@
  * @summary Tests mapped response subscriber
  * @library /test/lib /test/jdk/java/net/httpclient/lib
  * @build jdk.test.lib.net.SimpleSSLContext jdk.httpclient.test.lib.http2.Http2TestServer
+ *        jdk.httpclient.test.lib.common.TestServerConfigurator
  * @run testng/othervm
  *       -Djdk.internal.httpclient.debug=true
  *      MappingResponseSubscriber
@@ -46,23 +47,22 @@ import java.util.concurrent.Flow;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
-import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import java.net.http.HttpClient;
-import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandler;
-import java.net.http.HttpResponse.BodyHandlers;
 import java.net.http.HttpResponse.BodySubscribers;
 import  java.net.http.HttpResponse.BodySubscriber;
 import java.util.function.Function;
 import javax.net.ssl.SSLContext;
 
+import jdk.httpclient.test.lib.common.TestServerConfigurator;
 import jdk.internal.net.http.common.OperationTrackers.Tracker;
 import jdk.httpclient.test.lib.http2.Http2TestServer;
 import jdk.httpclient.test.lib.http2.Http2TestExchange;
 import jdk.httpclient.test.lib.http2.Http2Handler;
+import jdk.test.lib.Utils;
 import jdk.test.lib.net.SimpleSSLContext;
 import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeTest;
@@ -148,14 +148,14 @@ public class MappingResponseSubscriber {
             Tracker tracker = TRACKER.getTracker(client);
             client = null;
             System.gc();
-            AssertionError error = TRACKER.check(tracker, 1500);
+            AssertionError error = TRACKER.check(tracker, Utils.adjustTimeout(1500));
             if (error != null) throw error; // the client didn't shut down properly
         }
         if (sameClient) {
             Tracker tracker = TRACKER.getTracker(client);
             client = null;
             System.gc();
-            AssertionError error = TRACKER.check(tracker,1500);
+            AssertionError error = TRACKER.check(tracker, Utils.adjustTimeout(1500));
             if (error != null) throw error; // the client didn't shut down properly
         }
     }
@@ -230,7 +230,7 @@ public class MappingResponseSubscriber {
         httpURI_chunk = "http://" + serverAuthority(httpTestServer) + "/http1/chunk";
 
         httpsTestServer = HttpsServer.create(sa, 0);
-        httpsTestServer.setHttpsConfigurator(new HttpsConfigurator(sslContext));
+        httpsTestServer.setHttpsConfigurator(new TestServerConfigurator(sa.getAddress(), sslContext));
         httpsTestServer.createContext("/https1/fixed", h1_fixedLengthHandler);
         httpsTestServer.createContext("/https1/chunk", h1_chunkHandler);
         httpsURI_fixed = "https://" + serverAuthority(httpsTestServer) + "/https1/fixed";

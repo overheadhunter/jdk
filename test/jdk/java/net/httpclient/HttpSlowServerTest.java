@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -20,9 +20,8 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-import com.sun.net.httpserver.HttpServer;
-import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
+import jdk.httpclient.test.lib.common.TestServerConfigurator;
 import jdk.test.lib.net.SimpleSSLContext;
 
 import javax.net.ssl.SSLContext;
@@ -51,9 +50,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import jdk.httpclient.test.lib.common.HttpServerAdapters;
-import jdk.httpclient.test.lib.http2.Http2TestServer;
 import static java.net.http.HttpClient.Version.HTTP_1_1;
 import static java.net.http.HttpClient.Version.HTTP_2;
+import static java.net.http.HttpClient.Version.HTTP_3;
+import static java.net.http.HttpOption.Http3DiscoveryMode.HTTP_3_URI_ONLY;
+import static java.net.http.HttpOption.H3_DISCOVERY;
 
 /**
  * @test
@@ -62,9 +63,11 @@ import static java.net.http.HttpClient.Version.HTTP_2;
  * @library /test/lib /test/jdk/java/net/httpclient/lib
  * @build jdk.httpclient.test.lib.common.HttpServerAdapters jdk.test.lib.net.SimpleSSLContext
  *        DigestEchoServer HttpSlowServerTest
- * @run main/othervm -Dtest.requiresHost=true
- *                   -Djdk.httpclient.HttpClient.log=headers
+ *        jdk.httpclient.test.lib.common.TestServerConfigurator
+ * @run main/othervm/timeout=480 -Dtest.requiresHost=true
+ *                   -Djdk.httpclient.HttpClient.log=errors,headers,quic:hs
  *                   -Djdk.internal.httpclient.debug=false
+ *                   -Djdk.httpclient.quic.maxInitialTimeout=60
  *                   HttpSlowServerTest
  *
  */
@@ -98,12 +101,14 @@ public class HttpSlowServerTest implements HttpServerAdapters {
     HttpTestServer http2Server;
     HttpTestServer https1Server;
     HttpTestServer https2Server;
+    HttpTestServer http3Server;
     DigestEchoServer.TunnelingProxy proxy;
 
     URI http1URI;
     URI https1URI;
     URI http2URI;
     URI https2URI;
+    URI http3URI;
     InetSocketAddress proxyAddress;
     ProxySelector proxySelector;
     HttpClient client;
@@ -116,8 +121,7 @@ public class HttpSlowServerTest implements HttpServerAdapters {
             TimeUnit.SECONDS, new LinkedBlockingQueue<>()); // Used by the client
 
     public HttpClient newHttpClient(ProxySelector ps) {
-        HttpClient.Builder builder = HttpClient
-                .newBuilder()
+        HttpClient.Builder builder = newClientBuilderForH3()
                 .sslContext(context)
                 .executor(clientexec)
                 .proxy(ps);
@@ -138,7 +142,7 @@ public class HttpSlowServerTest implements HttpServerAdapters {
             // HTTPS/1.1
             HttpsServer sserver1 = HttpsServer.create(sa, 100);
             sserver1.setExecutor(executor);
-            sserver1.setHttpsConfigurator(new HttpsConfigurator(context));
+            sserver1.setHttpsConfigurator(new TestServerConfigurator(sa.getAddress(), context));
             https1Server = HttpTestServer.of(sserver1);
             https1Server.addHandler(new HttpTestSlowHandler(), "/HttpSlowServerTest/https1/");
             https1Server.start();
@@ -155,6 +159,12 @@ public class HttpSlowServerTest implements HttpServerAdapters {
             https2Server.addHandler(new HttpTestSlowHandler(), "/HttpSlowServerTest/https2/");
             https2Server.start();
             https2URI = new URI("https://" + https2Server.serverAuthority() + "/HttpSlowServerTest/https2/");
+
+            // HTTP/3
+            http3Server = HttpTestServer.create(HTTP_3_URI_ONLY, SSLContext.getDefault());
+            http3Server.addHandler(new HttpTestSlowHandler(), "/HttpSlowServerTest/http3/");
+            http3Server.start();
+            http3URI = new URI("https://" + http3Server.serverAuthority() + "/HttpSlowServerTest/http3/");
 
             proxy = DigestEchoServer.createHttpsProxyTunnel(
                     DigestEchoServer.HttpAuthSchemeType.NONE);
@@ -186,9 +196,10 @@ public class HttpSlowServerTest implements HttpServerAdapters {
     }
 
     public void run(String... args) throws Exception {
-        List<URI> serverURIs = List.of(http1URI, http2URI, https1URI, https2URI);
+        List<URI> serverURIs = List.of(http3URI, http1URI, http2URI, https1URI, https2URI);
         for (int i=0; i<20; i++) {
             for (URI base : serverURIs) {
+                if (base.getRawPath().contains("/http3/")) continue; // proxy not supported
                 if (base.getScheme().equalsIgnoreCase("https")) {
                     URI proxy = i % 1 == 0 ? base.resolve(URI.create("proxy/foo?n="+requestCounter.incrementAndGet()))
                     : base.resolve(URI.create("direct/foo?n="+requestCounter.incrementAndGet()));
@@ -206,7 +217,11 @@ public class HttpSlowServerTest implements HttpServerAdapters {
     public void test(URI uri) throws Exception {
         System.out.println("Testing with " + uri);
         pending.add(uri);
-        HttpRequest request = HttpRequest.newBuilder(uri).build();
+        var builder = HttpRequest.newBuilder(uri);
+        if (uri.getRawPath().contains("/http3/")) {
+            builder.version(HTTP_3).setOption(H3_DISCOVERY, HTTP_3_URI_ONLY);
+        }
+        HttpRequest request = builder.build();
         CompletableFuture<HttpResponse<String>> resp =
                 client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
                 .whenComplete((r, t) -> this.requestCompleted(request, r, t));
@@ -229,6 +244,7 @@ public class HttpSlowServerTest implements HttpServerAdapters {
         https1Server = stop(https1Server, HttpTestServer::stop);
         http2Server = stop(http2Server, HttpTestServer::stop);
         https2Server = stop(https2Server, HttpTestServer::stop);
+        http3Server = stop(http3Server, HttpTestServer::stop);
         client = null;
         try {
             executor.awaitTermination(2000, TimeUnit.MILLISECONDS);

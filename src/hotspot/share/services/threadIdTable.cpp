@@ -1,6 +1,5 @@
-
 /*
-* Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
+* Copyright (c) 2019, 2025, Oracle and/or its affiliates. All rights reserved.
 * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 *
 * This code is free software; you can redistribute it and/or modify it
@@ -23,9 +22,8 @@
 *
 */
 
-#include "precompiled.hpp"
 #include "classfile/javaClasses.inline.hpp"
-#include "runtime/atomic.hpp"
+#include "runtime/atomicAccess.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/threadSMR.hpp"
@@ -112,7 +110,7 @@ void ThreadIdTable::lazy_initialize(const ThreadsList *threads) {
 
 void ThreadIdTable::create_table(size_t size) {
   assert(_local_table == nullptr, "Thread table is already created");
-  size_t size_log = ceil_log2(size);
+  size_t size_log = log2i_ceil(size);
   size_t start_size_log =
       size_log > DEFAULT_TABLE_SIZE_LOG ? size_log : DEFAULT_TABLE_SIZE_LOG;
   _current_size = (size_t)1 << start_size_log;
@@ -121,17 +119,17 @@ void ThreadIdTable::create_table(size_t size) {
 }
 
 void ThreadIdTable::item_added() {
-  Atomic::inc(&_items_count);
+  AtomicAccess::inc(&_items_count);
   log_trace(thread, table) ("Thread entry added");
 }
 
 void ThreadIdTable::item_removed() {
-  Atomic::dec(&_items_count);
+  AtomicAccess::dec(&_items_count);
   log_trace(thread, table) ("Thread entry removed");
 }
 
 double ThreadIdTable::get_load_factor() {
-  return ((double)_items_count) / _current_size;
+  return ((double)_items_count) / (double)_current_size;
 }
 
 size_t ThreadIdTable::table_size() {
@@ -174,7 +172,7 @@ void ThreadIdTable::grow(JavaThread* jt) {
   }
   gt.done(jt);
   _current_size = table_size();
-  log_info(thread, table)("Grown to size:" SIZE_FORMAT, _current_size);
+  log_info(thread, table)("Grown to size:%zu", _current_size);
 }
 
 class ThreadIdTableLookup : public StackObj {
@@ -187,12 +185,15 @@ public:
   uintx get_hash() const {
     return _hash;
   }
-  bool equals(ThreadIdTableEntry** value, bool* is_dead) {
+  bool equals(ThreadIdTableEntry** value) {
     bool equals = primitive_equals(_tid, (*value)->tid());
     if (!equals) {
       return false;
     }
     return true;
+  }
+  bool is_dead(ThreadIdTableEntry** value) {
+    return false;
   }
 };
 

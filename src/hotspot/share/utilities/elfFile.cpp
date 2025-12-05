@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,13 +22,14 @@
  *
  */
 
-#include "precompiled.hpp"
 
 #if !defined(_WINDOWS) && !defined(__APPLE__)
 
+#include "cppstdlib/new.hpp"
 #include "jvm_io.h"
 #include "logging/log.hpp"
 #include "memory/allocation.inline.hpp"
+#include "utilities/checkedCast.hpp"
 #include "utilities/decoder.hpp"
 #include "utilities/elfFile.hpp"
 #include "utilities/elfFuncDescTable.hpp"
@@ -36,10 +37,9 @@
 #include "utilities/elfSymbolTable.hpp"
 #include "utilities/ostream.hpp"
 
-#include <string.h>
-#include <stdio.h>
 #include <limits.h>
-#include <new>
+#include <stdio.h>
+#include <string.h>
 
 const char* ElfFile::USR_LIB_DEBUG_DIRECTORY = "/usr/lib/debug";
 
@@ -684,9 +684,8 @@ bool ElfFile::create_new_dwarf_file(const char* filepath) {
 // Starting point of reading line number and filename information from the DWARF file.
 bool DwarfFile::get_filename_and_line_number(const uint32_t offset_in_library, char* filename, const size_t filename_len,
                                              int* line, const bool is_pc_after_call) {
-  DebugAranges debug_aranges(this);
   uint32_t compilation_unit_offset = 0; // 4-bytes for 32-bit DWARF
-  if (!debug_aranges.find_compilation_unit_offset(offset_in_library, &compilation_unit_offset)) {
+  if (!_debug_aranges.find_compilation_unit_offset(offset_in_library, &compilation_unit_offset)) {
     DWARF_LOG_ERROR("Failed to find .debug_info offset for the compilation unit.");
     return false;
   }
@@ -708,11 +707,87 @@ bool DwarfFile::get_filename_and_line_number(const uint32_t offset_in_library, c
   return true;
 }
 
+// Build sorted cache of all address ranges for binary search.
+DwarfFile::DebugAranges::CacheHint DwarfFile::DebugAranges::ensure_cached() {
+  if (_cache._failed) {
+    return CacheHint::FAILED;
+  }
+  if (_cache._initialized) {
+    return CacheHint::VALID;
+  }
+
+  assert(_cache._capacity == 0, "need fresh cache");
+  assert(_cache._count == 0, "need fresh cache");
+  const long pos = _reader.get_position();
+  if (!read_section_header()) {
+    _cache.destroy(true);
+    return CacheHint::FAILED;
+  }
+
+  // Start with reasonable initial capacity to minimize number of grow/realloc calls.
+  // Assume ~3% of the .debug_aranges is DebugArangesSetHeader and the rest is made up of AddressDescriptors.
+  const uintptr_t estimated_set_header_size = _size_bytes / 32;
+  const size_t initial_capacity = (_size_bytes - estimated_set_header_size) / sizeof(AddressDescriptor);
+  _cache._entries = NEW_C_HEAP_ARRAY_RETURN_NULL(ArangesEntry, initial_capacity, mtInternal);
+  if (_cache._entries == nullptr) {
+    _cache.destroy(true);
+    _reader.set_position(pos);
+    return CacheHint::TRY_LINEAR_SCAN;
+  }
+  _cache._capacity = initial_capacity;
+  _cache._count = 0;
+
+  // Read all sets and their descriptors
+  while (_reader.has_bytes_left()) {
+    DebugArangesSetHeader set_header;
+    if (!read_set_header(set_header)) {
+      break;
+    }
+
+    // Read all address descriptors for this set into the cache.
+    AddressDescriptor descriptor;
+    do {
+      if (!read_address_descriptor(descriptor)) {
+        _cache.destroy(true);
+        return CacheHint::FAILED;
+      }
+      if (!is_terminating_entry(set_header, descriptor) && descriptor.range_length > 0 &&
+          !_cache.add_entry(descriptor, set_header._debug_info_offset)) {
+        _cache.destroy(true);
+        _reader.set_position(pos);
+        return CacheHint::TRY_LINEAR_SCAN;
+      }
+    } while (!is_terminating_entry(set_header, descriptor) && _reader.has_bytes_left());
+  }
+
+  if (_cache._count == 0) {
+    _cache.destroy(false);
+    // No entries found, unusual but still valid.
+    return CacheHint::VALID;
+  }
+  _cache.sort();
+  _cache._initialized = true;
+  DWARF_LOG_INFO("Built .debug_aranges cache for '%s' with %zu entries", this->_dwarf_file->filepath(), _cache._count);
+  return CacheHint::VALID;
+}
+
 // (2) The .debug_aranges section contains a number of entries/sets. Each set contains one or multiple address range descriptors of the
 // form [beginning_address, beginning_address+length). Start reading these sets and their descriptors until we find one that contains
 // 'offset_in_library'. Read the debug_info_offset field from the header of this set which defines the offset for the compilation unit.
 // This process is described in section 6.1.2 of the DWARF 4 spec.
 bool DwarfFile::DebugAranges::find_compilation_unit_offset(const uint32_t offset_in_library, uint32_t* compilation_unit_offset) {
+  switch (ensure_cached()) {
+    case CacheHint::VALID:
+      return _cache.find_compilation_unit_offset(offset_in_library, compilation_unit_offset);
+    case CacheHint::TRY_LINEAR_SCAN:
+      break;
+    case CacheHint::FAILED:
+      return false;
+  }
+
+  // Fall back to linear scan if building of the cache failed, which can happen
+  // if there are C heap allocation errors.
+  DWARF_LOG_INFO("Falling back to linear scan of .debug_aranges for '%s'", _dwarf_file->filepath());
   if (!read_section_header()) {
     DWARF_LOG_ERROR("Failed to read a .debug_aranges header.");
     return false;
@@ -750,6 +825,7 @@ bool DwarfFile::DebugAranges::read_section_header() {
   }
 
   _section_start_address = shdr.sh_offset;
+  _size_bytes = shdr.sh_size;
   _reader.set_max_pos(shdr.sh_offset + shdr.sh_size);
   return _reader.set_position(shdr.sh_offset);
 }
@@ -789,7 +865,7 @@ bool DwarfFile::DebugAranges::read_set_header(DebugArangesSetHeader& header) {
 
   // We must align to twice the address size.
   uint8_t alignment = DwarfFile::ADDRESS_SIZE * 2;
-  uint8_t padding = alignment - (_reader.get_position() - _section_start_address) % alignment;
+  long padding = alignment - (_reader.get_position() - _section_start_address) % alignment;
   return _reader.move_position(padding);
 }
 
@@ -827,6 +903,74 @@ bool DwarfFile::DebugAranges::is_terminating_entry(const DwarfFile::DebugAranges
   assert(!is_terminating || (descriptor.beginning_address == 0 && descriptor.range_length == 0),
          "a terminating entry needs a pair of zero");
   return is_terminating;
+}
+
+// Sort entries by beginning_address, when same then sort longest range first.
+int DwarfFile::ArangesCache::compare_aranges_entries(const ArangesEntry& a, const ArangesEntry& b) {
+  if (a.beginning_address < b.beginning_address) {
+    return -1;
+  } else if (a.beginning_address > b.beginning_address) {
+    return 1;
+  }
+
+  uintptr_t len_a = a.end_address - a.beginning_address;
+  uintptr_t len_b = b.end_address - b.beginning_address;
+  if (len_a < len_b) {
+    return 1;
+  } else if (len_a > len_b) {
+    return -1;
+  }
+  return 0;
+}
+
+void DwarfFile::ArangesCache::sort() {
+  QuickSort::sort(_entries, _count, compare_aranges_entries);
+}
+
+bool DwarfFile::ArangesCache::add_entry(const AddressDescriptor& descriptor, uint32_t debug_info_offset) {
+  if (_count >= _capacity && !grow()) {
+    return false;
+  }
+  _entries[_count] = ArangesEntry(
+    descriptor.beginning_address,
+    descriptor.beginning_address + descriptor.range_length,
+    debug_info_offset
+  );
+  _count++;
+  return true;
+}
+
+bool DwarfFile::ArangesCache::grow() {
+  size_t new_capacity = _capacity == 0 ? 128 : _capacity * 1.5;
+  ArangesEntry* new_entries = REALLOC_C_HEAP_ARRAY_RETURN_NULL(ArangesEntry, _entries, new_capacity, mtInternal);
+  if (new_entries == nullptr) {
+    return false;
+  }
+  _entries = new_entries;
+  _capacity = new_capacity;
+  return true;
+}
+
+bool DwarfFile::ArangesCache::find_compilation_unit_offset(uint32_t offset_in_library, uint32_t* compilation_unit_offset) const {
+  if (!_initialized || _entries == nullptr || _count == 0) {
+    return false;
+  }
+
+  size_t left = 0;
+  size_t right = _count;
+  while (left < right) {
+    size_t mid = left + (right - left) / 2;
+    const ArangesEntry& entry = _entries[mid];
+    if (offset_in_library < entry.beginning_address) {
+      right = mid;
+    } else if (offset_in_library >= entry.end_address) {
+      left = mid + 1;
+    } else {
+      *compilation_unit_offset = entry.debug_info_offset;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Find the .debug_line offset for the line number program by reading from the .debug_abbrev and .debug_info section.
@@ -1423,7 +1567,7 @@ bool DwarfFile::LineNumberProgram::apply_extended_opcode() {
         // Must be an unsigned integer as specified in section 6.2.2 of the DWARF 4 spec for the discriminator register.
         return false;
       }
-      _state->_discriminator = discriminator;
+      _state->_discriminator = static_cast<uint32_t>(discriminator);
       break;
     default:
       assert(false, "Unknown extended opcode");
@@ -1446,11 +1590,12 @@ bool DwarfFile::LineNumberProgram::apply_standard_opcode(const uint8_t opcode) {
       }
       break;
     case DW_LNS_advance_pc: { // 1 operand
-      uint64_t operation_advance;
-      if (!_reader.read_uleb128(&operation_advance, 4)) {
+      uint64_t adv;
+      if (!_reader.read_uleb128(&adv, 4)) {
         // Must be at most 4 bytes because the index register is only 4 bytes wide.
         return false;
       }
+      uint32_t operation_advance = checked_cast<uint32_t>(adv);
       _state->add_to_address_register(operation_advance, _header);
       if (_state->_dwarf_version == 4) {
         _state->set_index_register(operation_advance, _header);
@@ -1464,7 +1609,7 @@ bool DwarfFile::LineNumberProgram::apply_standard_opcode(const uint8_t opcode) {
         // line register is 4 bytes wide.
         return false;
       }
-      _state->_line += line;
+      _state->_line += static_cast<uint32_t>(line);
       DWARF_LOG_TRACE("    DW_LNS_advance_line (%d)", _state->_line);
       break;
     case DW_LNS_set_file: // 1 operand
@@ -1473,7 +1618,7 @@ bool DwarfFile::LineNumberProgram::apply_standard_opcode(const uint8_t opcode) {
         // file register is 4 bytes wide.
         return false;
       }
-      _state->_file = file;
+      _state->_file = static_cast<uint32_t>(file);
       DWARF_LOG_TRACE("    DW_LNS_set_file (%u)", _state->_file);
       break;
     case DW_LNS_set_column: // 1 operand
@@ -1482,7 +1627,7 @@ bool DwarfFile::LineNumberProgram::apply_standard_opcode(const uint8_t opcode) {
         // column register is 4 bytes wide.
         return false;
       }
-      _state->_column = column;
+      _state->_column = static_cast<uint32_t>(column);
       DWARF_LOG_TRACE("    DW_LNS_set_column (%u)", _state->_column);
       break;
     case DW_LNS_negate_stmt: // No operands
@@ -1528,7 +1673,7 @@ bool DwarfFile::LineNumberProgram::apply_standard_opcode(const uint8_t opcode) {
         // isa register is 4 bytes wide.
         return false;
       }
-      _state->_isa = isa;
+      _state->_isa = static_cast<uint32_t>(isa);  // only save 4 bytes
       DWARF_LOG_TRACE("    DW_LNS_set_isa (%u)", _state->_isa);
       break;
     default:
@@ -1824,7 +1969,7 @@ bool DwarfFile::MarkedDwarfFileReader::read_sleb128(int64_t* result, const int8_
   return read_leb128((uint64_t*)result, check_size, true);
 }
 
-// If result is a nullptr, we do not care about the content of the string being read.
+// If result is a null, we do not care about the content of the string being read.
 bool DwarfFile::MarkedDwarfFileReader::read_string(char* result, const size_t result_len) {
   char first_char;
   if (!read_non_null_char(&first_char)) {
@@ -1860,7 +2005,7 @@ bool DwarfFile::MarkedDwarfFileReader::read_string(char* result, const size_t re
     if (next_byte == 0) {
       if (exceeded_buffer) {
         result[result_len - 1] = '\0'; // Mark end of string.
-        DWARF_LOG_ERROR("Tried to read " SIZE_FORMAT " bytes but exceeded buffer size of " SIZE_FORMAT ". Truncating string.",
+        DWARF_LOG_ERROR("Tried to read %zu bytes but exceeded buffer size of %zu. Truncating string.",
                         char_index, result_len);
       }
       return true;

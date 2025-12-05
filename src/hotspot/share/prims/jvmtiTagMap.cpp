@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,6 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/javaClasses.inline.hpp"
 #include "classfile/symbolTable.hpp"
@@ -37,18 +36,20 @@
 #include "oops/access.inline.hpp"
 #include "oops/arrayOop.hpp"
 #include "oops/constantPool.inline.hpp"
+#include "oops/fieldStreams.inline.hpp"
 #include "oops/instanceMirrorKlass.hpp"
 #include "oops/klass.inline.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/objArrayOop.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "oops/typeArrayOop.inline.hpp"
-#include "prims/jvmtiEventController.hpp"
 #include "prims/jvmtiEventController.inline.hpp"
 #include "prims/jvmtiExport.hpp"
 #include "prims/jvmtiImpl.hpp"
 #include "prims/jvmtiTagMap.hpp"
 #include "prims/jvmtiTagMapTable.hpp"
+#include "prims/jvmtiThreadState.hpp"
+#include "runtime/continuationWrapper.inline.hpp"
 #include "runtime/deoptimization.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/handles.inline.hpp"
@@ -56,17 +57,17 @@
 #include "runtime/javaCalls.hpp"
 #include "runtime/javaThread.inline.hpp"
 #include "runtime/jniHandles.inline.hpp"
+#include "runtime/mountUnmountDisabler.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/mutexLocker.hpp"
-#include "runtime/reflectionUtils.hpp"
 #include "runtime/safepoint.hpp"
-#include "runtime/timerTrace.hpp"
 #include "runtime/threadSMR.hpp"
+#include "runtime/timerTrace.hpp"
 #include "runtime/vframe.hpp"
-#include "runtime/vmThread.hpp"
 #include "runtime/vmOperations.hpp"
-#include "utilities/objectBitSet.inline.hpp"
+#include "runtime/vmThread.hpp"
 #include "utilities/macros.hpp"
+#include "utilities/objectBitSet.inline.hpp"
 
 typedef ObjectBitSet<mtServiceability> JVMTIBitSet;
 
@@ -395,6 +396,9 @@ class ClassFieldMap: public CHeapObj<mtInternal> {
   // constructor
   ClassFieldMap();
 
+  // calculates number of fields in all interfaces
+  static int interfaces_field_count(InstanceKlass* ik);
+
   // add a field
   void add(int index, char type, int offset);
 
@@ -422,6 +426,16 @@ ClassFieldMap::~ClassFieldMap() {
   delete _fields;
 }
 
+int ClassFieldMap::interfaces_field_count(InstanceKlass* ik) {
+  const Array<InstanceKlass*>* interfaces = ik->transitive_interfaces();
+  int count = 0;
+  for (int i = 0; i < interfaces->length(); i++) {
+    count += interfaces->at(i)->java_fields_count();
+
+  }
+  return count;
+}
+
 void ClassFieldMap::add(int index, char type, int offset) {
   ClassFieldDescriptor* field = new ClassFieldDescriptor(index, type, offset);
   _fields->append(field);
@@ -429,48 +443,57 @@ void ClassFieldMap::add(int index, char type, int offset) {
 
 // Returns a heap allocated ClassFieldMap to describe the static fields
 // of the given class.
-//
 ClassFieldMap* ClassFieldMap::create_map_of_static_fields(Klass* k) {
   InstanceKlass* ik = InstanceKlass::cast(k);
 
   // create the field map
   ClassFieldMap* field_map = new ClassFieldMap();
 
-  FilteredFieldStream f(ik, false, false);
-  int max_field_index = f.field_count()-1;
+  // Static fields of interfaces and superclasses are reported as references from the interfaces/superclasses.
+  // Need to calculate start index of this class fields: number of fields in all interfaces and superclasses.
+  int index = interfaces_field_count(ik);
+  for (InstanceKlass* super_klass = ik->super(); super_klass != nullptr; super_klass = super_klass->super()) {
+    index += super_klass->java_fields_count();
+  }
 
-  int index = 0;
-  for (FilteredFieldStream fld(ik, true, true); !fld.eos(); fld.next(), index++) {
+  for (JavaFieldStream fld(ik); !fld.done(); fld.next(), index++) {
     // ignore instance fields
     if (!fld.access_flags().is_static()) {
       continue;
     }
-    field_map->add(max_field_index - index, fld.signature()->char_at(0), fld.offset());
+    field_map->add(index, fld.signature()->char_at(0), fld.offset());
   }
+
   return field_map;
 }
 
 // Returns a heap allocated ClassFieldMap to describe the instance fields
 // of the given class. All instance fields are included (this means public
-// and private fields declared in superclasses and superinterfaces too).
-//
+// and private fields declared in superclasses too).
 ClassFieldMap* ClassFieldMap::create_map_of_instance_fields(oop obj) {
   InstanceKlass* ik = InstanceKlass::cast(obj->klass());
 
   // create the field map
   ClassFieldMap* field_map = new ClassFieldMap();
 
-  FilteredFieldStream f(ik, false, false);
+  // fields of the superclasses are reported first, so need to know total field number to calculate field indices
+  int total_field_number = interfaces_field_count(ik);
+  for (InstanceKlass* klass = ik; klass != nullptr; klass = klass->super()) {
+    total_field_number += klass->java_fields_count();
+  }
 
-  int max_field_index = f.field_count()-1;
-
-  int index = 0;
-  for (FilteredFieldStream fld(ik, false, false); !fld.eos(); fld.next(), index++) {
-    // ignore static fields
-    if (fld.access_flags().is_static()) {
-      continue;
+  for (InstanceKlass* klass = ik; klass != nullptr; klass = klass->super()) {
+    JavaFieldStream fld(klass);
+    int start_index = total_field_number - klass->java_fields_count();
+    for (int index = 0; !fld.done(); fld.next(), index++) {
+      // ignore static fields
+      if (fld.access_flags().is_static()) {
+        continue;
+      }
+      field_map->add(start_index + index, fld.signature()->char_at(0), fld.offset());
     }
-    field_map->add(max_field_index - index, fld.signature()->char_at(0), fld.offset());
+    // update total_field_number for superclass (decrease by the field count in the current class)
+    total_field_number = start_index;
   }
 
   return field_map;
@@ -919,6 +942,7 @@ class IterateOverHeapObjectClosure: public ObjectClosure {
 
 // invoked for each object in the heap
 void IterateOverHeapObjectClosure::do_object(oop o) {
+  assert(o != nullptr, "Heap iteration should never produce null!");
   // check if iteration has been halted
   if (is_iteration_aborted()) return;
 
@@ -928,8 +952,8 @@ void IterateOverHeapObjectClosure::do_object(oop o) {
   }
 
   // skip if object is a dormant shared object whose mirror hasn't been loaded
-  if (o != nullptr && o->klass()->java_mirror() == nullptr) {
-    log_debug(cds, heap)("skipped dormant archived object " INTPTR_FORMAT " (%s)", p2i(o),
+  if (o->klass()->java_mirror() == nullptr) {
+    log_debug(aot, heap)("skipped dormant archived object " INTPTR_FORMAT " (%s)", p2i(o),
                          o->klass()->external_name());
     return;
   }
@@ -1007,6 +1031,7 @@ class IterateThroughHeapObjectClosure: public ObjectClosure {
 
 // invoked for each object in the heap
 void IterateThroughHeapObjectClosure::do_object(oop obj) {
+  assert(obj != nullptr, "Heap iteration should never produce null!");
   // check if iteration has been halted
   if (is_iteration_aborted()) return;
 
@@ -1014,8 +1039,8 @@ void IterateThroughHeapObjectClosure::do_object(oop obj) {
   if (is_filtered_by_klass_filter(obj, klass())) return;
 
   // skip if object is a dormant shared object whose mirror hasn't been loaded
-  if (obj != nullptr &&   obj->klass()->java_mirror() == nullptr) {
-    log_debug(cds, heap)("skipped dormant archived object " INTPTR_FORMAT " (%s)", p2i(obj),
+  if (obj->klass()->java_mirror() == nullptr) {
+    log_debug(aot, heap)("skipped dormant archived object " INTPTR_FORMAT " (%s)", p2i(obj),
                          obj->klass()->external_name());
     return;
   }
@@ -1403,16 +1428,16 @@ class AdvancedHeapWalkContext: public HeapWalkContext {
   jint heap_filter() const         { return _heap_filter; }
   Klass* klass_filter() const      { return _klass_filter; }
 
-  const jvmtiHeapReferenceCallback heap_reference_callback() const {
+  jvmtiHeapReferenceCallback heap_reference_callback() const {
     return _heap_callbacks->heap_reference_callback;
   };
-  const jvmtiPrimitiveFieldCallback primitive_field_callback() const {
+  jvmtiPrimitiveFieldCallback primitive_field_callback() const {
     return _heap_callbacks->primitive_field_callback;
   }
-  const jvmtiArrayPrimitiveValueCallback array_primitive_value_callback() const {
+  jvmtiArrayPrimitiveValueCallback array_primitive_value_callback() const {
     return _heap_callbacks->array_primitive_value_callback;
   }
-  const jvmtiStringPrimitiveValueCallback string_primitive_value_callback() const {
+  jvmtiStringPrimitiveValueCallback string_primitive_value_callback() const {
     return _heap_callbacks->string_primitive_value_callback;
   }
 };
@@ -2166,6 +2191,39 @@ class SimpleRootsClosure : public OopClosure {
   virtual void do_oop(narrowOop* obj_p) { ShouldNotReachHere(); }
 };
 
+// A supporting closure used to process ClassLoaderData roots.
+class CLDRootsClosure: public OopClosure {
+private:
+  bool _continue;
+public:
+  CLDRootsClosure(): _continue(true) {}
+
+  inline bool stopped() {
+    return !_continue;
+  }
+
+  void do_oop(oop* obj_p) {
+    if (stopped()) {
+      return;
+    }
+
+    oop o = NativeAccess<AS_NO_KEEPALIVE>::oop_load(obj_p);
+    // ignore null
+    if (o == nullptr) {
+      return;
+    }
+
+    jvmtiHeapReferenceKind kind = JVMTI_HEAP_REFERENCE_OTHER;
+    if (o->klass() == vmClasses::Class_klass()) {
+      kind = JVMTI_HEAP_REFERENCE_SYSTEM_CLASS;
+    }
+
+    // invoke the callback
+    _continue = CallbackInvoker::report_simple_root(kind, o);
+  }
+  virtual void do_oop(narrowOop* obj_p) { ShouldNotReachHere(); }
+};
+
 // A supporting closure used to process JNI locals
 class JNILocalRootsClosure : public OopClosure {
  private:
@@ -2204,6 +2262,161 @@ class JNILocalRootsClosure : public OopClosure {
   }
   virtual void do_oop(narrowOop* obj_p) { ShouldNotReachHere(); }
 };
+
+// Helper class to collect/report stack references.
+class StackRefCollector {
+private:
+  JvmtiTagMap* _tag_map;
+  JNILocalRootsClosure* _blk;
+  // java_thread is needed only to report JNI local on top native frame;
+  // I.e. it's required only for platform/carrier threads or mounted virtual threads.
+  JavaThread* _java_thread;
+
+  oop _threadObj;
+  jlong _thread_tag;
+  jlong _tid;
+
+  bool _is_top_frame;
+  int _depth;
+  frame* _last_entry_frame;
+
+  bool report_java_stack_refs(StackValueCollection* values, jmethodID method, jlocation bci, jint slot_offset);
+  bool report_native_stack_refs(jmethodID method);
+
+public:
+  StackRefCollector(JvmtiTagMap* tag_map, JNILocalRootsClosure* blk, JavaThread* java_thread)
+    : _tag_map(tag_map), _blk(blk), _java_thread(java_thread),
+      _threadObj(nullptr), _thread_tag(0), _tid(0),
+      _is_top_frame(true), _depth(0), _last_entry_frame(nullptr)
+  {
+  }
+
+  bool set_thread(oop o);
+  // Sets the thread and reports the reference to it with the specified kind.
+  bool set_thread(jvmtiHeapReferenceKind kind, oop o);
+
+  bool do_frame(vframe* vf);
+  // Handles frames until vf->sender() is null.
+  bool process_frames(vframe* vf);
+};
+
+bool StackRefCollector::set_thread(oop o) {
+  _threadObj = o;
+  _thread_tag = tag_for(_tag_map, _threadObj);
+  _tid = java_lang_Thread::thread_id(_threadObj);
+
+  _is_top_frame = true;
+  _depth = 0;
+  _last_entry_frame = nullptr;
+
+  return true;
+}
+
+bool StackRefCollector::set_thread(jvmtiHeapReferenceKind kind, oop o) {
+  return set_thread(o)
+         && CallbackInvoker::report_simple_root(kind, _threadObj);
+}
+
+bool StackRefCollector::report_java_stack_refs(StackValueCollection* values, jmethodID method, jlocation bci, jint slot_offset) {
+  for (int index = 0; index < values->size(); index++) {
+    if (values->at(index)->type() == T_OBJECT) {
+      oop obj = values->obj_at(index)();
+      if (obj == nullptr) {
+        continue;
+      }
+      // stack reference
+      if (!CallbackInvoker::report_stack_ref_root(_thread_tag, _tid, _depth, method,
+                                                  bci, slot_offset + index, obj)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool StackRefCollector::report_native_stack_refs(jmethodID method) {
+  _blk->set_context(_thread_tag, _tid, _depth, method);
+  if (_is_top_frame) {
+    // JNI locals for the top frame.
+    if (_java_thread != nullptr) {
+      _java_thread->active_handles()->oops_do(_blk);
+      if (_blk->stopped()) {
+        return false;
+      }
+    }
+  } else {
+    if (_last_entry_frame != nullptr) {
+      // JNI locals for the entry frame.
+      assert(_last_entry_frame->is_entry_frame(), "checking");
+      _last_entry_frame->entry_frame_call_wrapper()->handles()->oops_do(_blk);
+      if (_blk->stopped()) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool StackRefCollector::do_frame(vframe* vf) {
+  if (vf->is_java_frame()) {
+    // java frame (interpreted, compiled, ...)
+    javaVFrame* jvf = javaVFrame::cast(vf);
+
+    jmethodID method = jvf->method()->jmethod_id();
+
+    if (!(jvf->method()->is_native())) {
+      jlocation bci = (jlocation)jvf->bci();
+      StackValueCollection* locals = jvf->locals();
+      if (!report_java_stack_refs(locals, method, bci, 0)) {
+        return false;
+      }
+      if (!report_java_stack_refs(jvf->expressions(), method, bci, locals->size())) {
+        return false;
+      }
+
+      // Follow oops from compiled nmethod.
+      if (jvf->cb() != nullptr && jvf->cb()->is_nmethod()) {
+        _blk->set_context(_thread_tag, _tid, _depth, method);
+        // Need to apply load barriers for unmounted vthreads.
+        nmethod* nm = jvf->cb()->as_nmethod();
+        nm->run_nmethod_entry_barrier();
+        nm->oops_do(_blk);
+        if (_blk->stopped()) {
+          return false;
+        }
+      }
+    } else {
+      // native frame
+      if (!report_native_stack_refs(method)) {
+        return false;
+      }
+    }
+    _last_entry_frame = nullptr;
+    _depth++;
+  } else {
+    // externalVFrame - for an entry frame then we report the JNI locals
+    // when we find the corresponding javaVFrame
+    frame* fr = vf->frame_pointer();
+    assert(fr != nullptr, "sanity check");
+    if (fr->is_entry_frame()) {
+      _last_entry_frame = fr;
+    }
+  }
+
+  _is_top_frame = false;
+
+  return true;
+}
+
+bool StackRefCollector::process_frames(vframe* vf) {
+  while (vf != nullptr) {
+    if (!do_frame(vf)) {
+      return false;
+    }
+    vf = vf->sender();
+  }
+  return true;
+}
 
 
 // A VM operation to iterate over objects that are reachable from
@@ -2268,7 +2481,8 @@ class VM_HeapWalkOperation: public VM_Operation {
   // root collection
   inline bool collect_simple_roots();
   inline bool collect_stack_roots();
-  inline bool collect_stack_roots(JavaThread* java_thread, JNILocalRootsClosure* blk);
+  inline bool collect_stack_refs(JavaThread* java_thread, JNILocalRootsClosure* blk);
+  inline bool collect_vthread_stack_refs(oop vt);
 
   // visit an object
   inline bool visit(oop o);
@@ -2415,10 +2629,10 @@ inline bool VM_HeapWalkOperation::iterate_over_class(oop java_class) {
     oop mirror = klass->java_mirror();
 
     // super (only if something more interesting than java.lang.Object)
-    InstanceKlass* java_super = ik->java_super();
-    if (java_super != nullptr && java_super != vmClasses::Object_klass()) {
-      oop super = java_super->java_mirror();
-      if (!CallbackInvoker::report_superclass_reference(mirror, super)) {
+    InstanceKlass* super_klass = ik->super();
+    if (super_klass != nullptr && super_klass != vmClasses::Object_klass()) {
+      oop super_oop = super_klass->java_mirror();
+      if (!CallbackInvoker::report_superclass_reference(mirror, super_oop)) {
         return false;
       }
     }
@@ -2596,10 +2810,10 @@ inline bool VM_HeapWalkOperation::collect_simple_roots() {
   }
 
   // Preloaded classes and loader from the system dictionary
-  blk.set_kind(JVMTI_HEAP_REFERENCE_SYSTEM_CLASS);
-  CLDToOopClosure cld_closure(&blk, false);
+  CLDRootsClosure cld_roots_closure;
+  CLDToOopClosure cld_closure(&cld_roots_closure, ClassLoaderData::_claim_none);
   ClassLoaderDataGraph::always_strong_cld_do(&cld_closure);
-  if (blk.stopped()) {
+  if (cld_roots_closure.stopped()) {
     return false;
   }
 
@@ -2617,121 +2831,66 @@ inline bool VM_HeapWalkOperation::collect_simple_roots() {
   return true;
 }
 
-// Walk the stack of a given thread and find all references (locals
-// and JNI calls) and report these as stack references
-inline bool VM_HeapWalkOperation::collect_stack_roots(JavaThread* java_thread,
-                                                      JNILocalRootsClosure* blk)
+// Reports the thread as JVMTI_HEAP_REFERENCE_THREAD,
+// walks the stack of the thread, finds all references (locals
+// and JNI calls) and reports these as stack references.
+inline bool VM_HeapWalkOperation::collect_stack_refs(JavaThread* java_thread,
+                                                     JNILocalRootsClosure* blk)
 {
   oop threadObj = java_thread->threadObj();
+  oop mounted_vt = java_thread->is_vthread_mounted() ? java_thread->vthread() : nullptr;
+  if (mounted_vt != nullptr && !JvmtiEnvBase::is_vthread_alive(mounted_vt)) {
+    mounted_vt = nullptr;
+  }
   assert(threadObj != nullptr, "sanity check");
 
-  // only need to get the thread's tag once per thread
-  jlong thread_tag = tag_for(_tag_map, threadObj);
+  StackRefCollector stack_collector(tag_map(), blk, java_thread);
 
-  // also need the thread id
-  jlong tid = java_lang_Thread::thread_id(threadObj);
+  if (!java_thread->has_last_Java_frame()) {
+    if (!stack_collector.set_thread(JVMTI_HEAP_REFERENCE_THREAD, threadObj)) {
+      return false;
+    }
+    // no last java frame but there may be JNI locals
+    blk->set_context(tag_for(_tag_map, threadObj), java_lang_Thread::thread_id(threadObj), 0, (jmethodID)nullptr);
+    java_thread->active_handles()->oops_do(blk);
+    return !blk->stopped();
+  }
+  // vframes are resource allocated
+  Thread* current_thread = Thread::current();
+  ResourceMark rm(current_thread);
+  HandleMark hm(current_thread);
 
+  RegisterMap reg_map(java_thread,
+                      RegisterMap::UpdateMap::include,
+                      RegisterMap::ProcessFrames::include,
+                      RegisterMap::WalkContinuation::include);
 
-  if (java_thread->has_last_Java_frame()) {
-
-    // vframes are resource allocated
-    Thread* current_thread = Thread::current();
-    ResourceMark rm(current_thread);
-    HandleMark hm(current_thread);
-
-    RegisterMap reg_map(java_thread,
-                        RegisterMap::UpdateMap::include,
-                        RegisterMap::ProcessFrames::include,
-                        RegisterMap::WalkContinuation::skip);
+  // first handle mounted vthread (if any)
+  if (mounted_vt != nullptr) {
     frame f = java_thread->last_frame();
     vframe* vf = vframe::new_vframe(&f, &reg_map, java_thread);
-
-    bool is_top_frame = true;
-    int depth = 0;
-    frame* last_entry_frame = nullptr;
-
-    while (vf != nullptr) {
-      if (vf->is_java_frame()) {
-
-        // java frame (interpreted, compiled, ...)
-        javaVFrame *jvf = javaVFrame::cast(vf);
-
-        // the jmethodID
-        jmethodID method = jvf->method()->jmethod_id();
-
-        if (!(jvf->method()->is_native())) {
-          jlocation bci = (jlocation)jvf->bci();
-          StackValueCollection* locals = jvf->locals();
-          for (int slot=0; slot<locals->size(); slot++) {
-            if (locals->at(slot)->type() == T_OBJECT) {
-              oop o = locals->obj_at(slot)();
-              if (o == nullptr) {
-                continue;
-              }
-
-              // stack reference
-              if (!CallbackInvoker::report_stack_ref_root(thread_tag, tid, depth, method,
-                                                   bci, slot, o)) {
-                return false;
-              }
-            }
-          }
-
-          StackValueCollection* exprs = jvf->expressions();
-          for (int index=0; index < exprs->size(); index++) {
-            if (exprs->at(index)->type() == T_OBJECT) {
-              oop o = exprs->obj_at(index)();
-              if (o == nullptr) {
-                continue;
-              }
-
-              // stack reference
-              if (!CallbackInvoker::report_stack_ref_root(thread_tag, tid, depth, method,
-                                                   bci, locals->size() + index, o)) {
-                return false;
-              }
-            }
-          }
-
-          // Follow oops from compiled nmethod
-          if (jvf->cb() != nullptr && jvf->cb()->is_nmethod()) {
-            blk->set_context(thread_tag, tid, depth, method);
-            jvf->cb()->as_nmethod()->oops_do(blk);
-          }
-        } else {
-          blk->set_context(thread_tag, tid, depth, method);
-          if (is_top_frame) {
-            // JNI locals for the top frame.
-            java_thread->active_handles()->oops_do(blk);
-          } else {
-            if (last_entry_frame != nullptr) {
-              // JNI locals for the entry frame
-              assert(last_entry_frame->is_entry_frame(), "checking");
-              last_entry_frame->entry_frame_call_wrapper()->handles()->oops_do(blk);
-            }
-          }
-        }
-        last_entry_frame = nullptr;
-        depth++;
-      } else {
-        // externalVFrame - for an entry frame then we report the JNI locals
-        // when we find the corresponding javaVFrame
-        frame* fr = vf->frame_pointer();
-        assert(fr != nullptr, "sanity check");
-        if (fr->is_entry_frame()) {
-          last_entry_frame = fr;
-        }
-      }
-
-      vf = vf->sender();
-      is_top_frame = false;
+    // report virtual thread as JVMTI_HEAP_REFERENCE_OTHER
+    if (!stack_collector.set_thread(JVMTI_HEAP_REFERENCE_OTHER, mounted_vt)) {
+      return false;
     }
-  } else {
-    // no last java frame but there may be JNI locals
-    blk->set_context(thread_tag, tid, 0, (jmethodID)nullptr);
-    java_thread->active_handles()->oops_do(blk);
+    // split virtual thread and carrier thread stacks by vthread entry ("enterSpecial") frame,
+    // consider vthread entry frame as the last vthread stack frame
+    while (vf != nullptr) {
+      if (!stack_collector.do_frame(vf)) {
+        return false;
+      }
+      if (vf->is_vthread_entry()) {
+        break;
+      }
+      vf = vf->sender();
+    }
   }
-  return true;
+  // Platform or carrier thread.
+  vframe* vf = JvmtiEnvBase::get_cthread_last_java_vframe(java_thread, &reg_map);
+  if (!stack_collector.set_thread(JVMTI_HEAP_REFERENCE_THREAD, threadObj)) {
+    return false;
+  }
+  return stack_collector.process_frames(vf);
 }
 
 
@@ -2743,18 +2902,48 @@ inline bool VM_HeapWalkOperation::collect_stack_roots() {
   for (JavaThreadIteratorWithHandle jtiwh; JavaThread *thread = jtiwh.next(); ) {
     oop threadObj = thread->threadObj();
     if (threadObj != nullptr && !thread->is_exiting() && !thread->is_hidden_from_external_view()) {
-      // Collect the simple root for this thread before we
-      // collect its stack roots
-      if (!CallbackInvoker::report_simple_root(JVMTI_HEAP_REFERENCE_THREAD,
-                                               threadObj)) {
-        return false;
-      }
-      if (!collect_stack_roots(thread, &blk)) {
+      if (!collect_stack_refs(thread, &blk)) {
         return false;
       }
     }
   }
   return true;
+}
+
+// Reports stack references for the unmounted virtual thread.
+inline bool VM_HeapWalkOperation::collect_vthread_stack_refs(oop vt) {
+  if (!JvmtiEnvBase::is_vthread_alive(vt)) {
+    return true;
+  }
+  ContinuationWrapper cont(java_lang_VirtualThread::continuation(vt));
+  if (cont.is_empty()) {
+    return true;
+  }
+  assert(!cont.is_mounted(), "sanity check");
+
+  stackChunkOop chunk = cont.last_nonempty_chunk();
+  if (chunk == nullptr || chunk->is_empty()) {
+    return true;
+  }
+
+  // vframes are resource allocated
+  Thread* current_thread = Thread::current();
+  ResourceMark rm(current_thread);
+  HandleMark hm(current_thread);
+
+  RegisterMap reg_map(cont.continuation(), RegisterMap::UpdateMap::include);
+
+  JNILocalRootsClosure blk;
+  // JavaThread is not required for unmounted virtual threads
+  StackRefCollector stack_collector(tag_map(), &blk, nullptr);
+  // reference to the vthread is already reported
+  if (!stack_collector.set_thread(vt)) {
+    return false;
+  }
+
+  frame fr = chunk->top_frame(&reg_map);
+  vframe* vf = vframe::new_vframe(&fr, &reg_map, nullptr);
+  return stack_collector.process_frames(vf);
 }
 
 // visit an object
@@ -2775,6 +2964,13 @@ bool VM_HeapWalkOperation::visit(oop o) {
         return iterate_over_class(o);
       }
     } else {
+      // we report stack references only when initial object is not specified
+      // (in the case we start from heap roots which include platform thread stack references)
+      if (initial_object().is_null() && java_lang_VirtualThread::is_subclass(o->klass())) {
+        if (!collect_vthread_stack_refs(o)) {
+          return false;
+        }
+      }
       return iterate_over_object(o);
     }
   }
@@ -2832,11 +3028,15 @@ void JvmtiTagMap::iterate_over_reachable_objects(jvmtiHeapRootCallback heap_root
                                                  jvmtiStackReferenceCallback stack_ref_callback,
                                                  jvmtiObjectReferenceCallback object_ref_callback,
                                                  const void* user_data) {
+  // VTMS transitions must be disabled before the EscapeBarrier.
+  MountUnmountDisabler disabler;
+
   JavaThread* jt = JavaThread::current();
   EscapeBarrier eb(true, jt);
   eb.deoptimize_objects_all_threads();
   Arena dead_object_arena(mtServiceability);
   GrowableArray<jlong> dead_objects(&dead_object_arena, 10, 0, 0);
+
   {
     MutexLocker ml(Heap_lock);
     BasicHeapWalkContext context(heap_root_callback, stack_ref_callback, object_ref_callback);
@@ -2856,6 +3056,9 @@ void JvmtiTagMap::iterate_over_objects_reachable_from_object(jobject object,
 
   Arena dead_object_arena(mtServiceability);
   GrowableArray<jlong> dead_objects(&dead_object_arena, 10, 0, 0);
+
+  MountUnmountDisabler disabler;
+
   {
     MutexLocker ml(Heap_lock);
     BasicHeapWalkContext context(nullptr, nullptr, object_ref_callback);
@@ -2873,6 +3076,9 @@ void JvmtiTagMap::follow_references(jint heap_filter,
                                     const jvmtiHeapCallbacks* callbacks,
                                     const void* user_data)
 {
+  // VTMS transitions must be disabled before the EscapeBarrier.
+  MountUnmountDisabler disabler;
+
   oop obj = JNIHandles::resolve(object);
   JavaThread* jt = JavaThread::current();
   Handle initial_object(jt, obj);
@@ -2884,6 +3090,7 @@ void JvmtiTagMap::follow_references(jint heap_filter,
 
   Arena dead_object_arena(mtServiceability);
   GrowableArray<jlong> dead_objects(&dead_object_arena, 10, 0, 0);
+
   {
     MutexLocker ml(Heap_lock);
     AdvancedHeapWalkContext context(heap_filter, klass, callbacks);

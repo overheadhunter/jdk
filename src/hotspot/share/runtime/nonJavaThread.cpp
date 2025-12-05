@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,11 +22,10 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "gc/shared/barrierSet.hpp"
 #include "gc/shared/gcId.hpp"
 #include "jvm_io.h"
-#include "runtime/atomic.hpp"
+#include "runtime/atomicAccess.hpp"
 #include "runtime/javaThread.hpp"
 #include "runtime/jniHandles.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -51,20 +50,24 @@ public:
   List() : _head(nullptr), _protect() {}
 };
 
-NonJavaThread::List NonJavaThread::_the_list;
+DeferredStatic<NonJavaThread::List> NonJavaThread::_the_list;
+
+void NonJavaThread::init() {
+  _the_list.initialize();
+}
 
 NonJavaThread::Iterator::Iterator() :
-  _protect_enter(_the_list._protect.enter()),
-  _current(Atomic::load_acquire(&_the_list._head))
+  _protect_enter(_the_list->_protect.enter()),
+  _current(AtomicAccess::load_acquire(&_the_list->_head))
 {}
 
 NonJavaThread::Iterator::~Iterator() {
-  _the_list._protect.exit(_protect_enter);
+  _the_list->_protect.exit(_protect_enter);
 }
 
 void NonJavaThread::Iterator::step() {
   assert(!end(), "precondition");
-  _current = Atomic::load_acquire(&_current->_next);
+  _current = AtomicAccess::load_acquire(&_current->_next);
 }
 
 NonJavaThread::NonJavaThread() : Thread(), _next(nullptr) {
@@ -77,8 +80,8 @@ void NonJavaThread::add_to_the_list() {
   MutexLocker ml(NonJavaThreadsList_lock, Mutex::_no_safepoint_check_flag);
   // Initialize BarrierSet-related data before adding to list.
   BarrierSet::barrier_set()->on_thread_attach(this);
-  Atomic::release_store(&_next, _the_list._head);
-  Atomic::release_store(&_the_list._head, this);
+  AtomicAccess::release_store(&_next, _the_list->_head);
+  AtomicAccess::release_store(&_the_list->_head, this);
 }
 
 void NonJavaThread::remove_from_the_list() {
@@ -86,7 +89,7 @@ void NonJavaThread::remove_from_the_list() {
     MutexLocker ml(NonJavaThreadsList_lock, Mutex::_no_safepoint_check_flag);
     // Cleanup BarrierSet-related data before removing from list.
     BarrierSet::barrier_set()->on_thread_detach(this);
-    NonJavaThread* volatile* p = &_the_list._head;
+    NonJavaThread* volatile* p = &_the_list->_head;
     for (NonJavaThread* t = *p; t != nullptr; p = &t->_next, t = *p) {
       if (t == this) {
         *p = _next;
@@ -98,7 +101,7 @@ void NonJavaThread::remove_from_the_list() {
   // allowed, so do it while holding a dedicated lock.  Outside and distinct
   // from NJTList_lock in case an iteration attempts to lock it.
   MutexLocker ml(NonJavaThreadsListSync_lock, Mutex::_no_safepoint_check_flag);
-  _the_list._protect.synchronize();
+  _the_list->_protect.synchronize();
   _next = nullptr;                 // Safe to drop the link now.
 }
 
@@ -156,7 +159,7 @@ void NamedThread::print_on(outputStream* st) const {
 // timer interrupts exists on the platform.
 
 WatcherThread* WatcherThread::_watcher_thread   = nullptr;
-bool WatcherThread::_startable = false;
+bool WatcherThread::_run_all_tasks = false;
 volatile bool  WatcherThread::_should_terminate = false;
 
 WatcherThread::WatcherThread() : NonJavaThread() {
@@ -183,6 +186,11 @@ int WatcherThread::sleep() const {
   if (_should_terminate) {
     // check for termination before we do any housekeeping or wait
     return 0;  // we did not sleep.
+  }
+
+  if (!_run_all_tasks) {
+    ml.wait(100);
+    return 0;
   }
 
   // remaining will be zero if there are no tasks,
@@ -280,7 +288,10 @@ void WatcherThread::run() {
       break;
     }
 
-    PeriodicTask::real_time_tick(time_waited);
+    // Don't process enrolled tasks until VM is fully initialized.
+    if (_run_all_tasks) {
+      PeriodicTask::real_time_tick(time_waited);
+    }
   }
 
   // Signal that it is terminated
@@ -293,18 +304,16 @@ void WatcherThread::run() {
 }
 
 void WatcherThread::start() {
-  assert(PeriodicTask_lock->owned_by_self(), "PeriodicTask_lock required");
-
-  if (watcher_thread() == nullptr && _startable) {
-    _should_terminate = false;
-    // Create the single instance of WatcherThread
-    new WatcherThread();
-  }
+  MonitorLocker ml(PeriodicTask_lock);
+  _should_terminate = false;
+  // Create the single instance of WatcherThread
+  new WatcherThread();
 }
 
-void WatcherThread::make_startable() {
-  assert(PeriodicTask_lock->owned_by_self(), "PeriodicTask_lock required");
-  _startable = true;
+void WatcherThread::run_all_tasks() {
+  MonitorLocker ml(PeriodicTask_lock);
+  _run_all_tasks = true;
+  ml.notify();
 }
 
 void WatcherThread::stop() {
@@ -339,4 +348,3 @@ void WatcherThread::print_on(outputStream* st) const {
   Thread::print_on(st);
   st->cr();
 }
-

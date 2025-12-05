@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -59,11 +59,22 @@ protected:
   // The covered regions should be in address order.
   MemRegion _covered[max_covered_regions];
 
-  // The last card is a guard card; never committed.
-  MemRegion _guard_region;
-
   inline size_t compute_byte_map_size(size_t num_bytes);
 
+  // We use 0x00 (zero) to represent Dirty and 0xFF to represent Clean because
+  // this choice reduces the barrier code by one instruction on architectures with
+  // a constant-zero register. On such architectures, the Dirty value (0x00) is
+  // directly accessible through the zero register, eliminating the need to load
+  // the value explicitly and thereby saving one instruction
+  //
+  // E.g. see
+  //  Urs Hölzle. A fast write barrier for generational garbage collectors.
+  //  In Eliot Moss, Paul R. Wilson, and Benjamin Zorn, editors, OOPSLA/ECOOP '93
+  //  Workshop on Garbage Collection in Object-Oriented Systems, October 1993
+  //
+  // that shows this for SPARC (but aarch32/aarch64/RISC-V are similar in this
+  // respect).
+  //
   enum CardValues {
     clean_card                  = (CardValue)-1,
 
@@ -111,9 +122,8 @@ public:
   void clear_MemRegion(MemRegion mr);
 
   // Return true if "p" is at the start of a card.
-  bool is_card_aligned(HeapWord* p) {
-    CardValue* pcard = byte_for(p);
-    return (addr_for(pcard) == p);
+  static bool is_card_aligned(HeapWord* p) {
+    return is_aligned(p, card_size());
   }
 
   // Mapping from address to card marking array entry
@@ -134,8 +144,6 @@ public:
   CardValue* byte_after(const void* p) const {
     return byte_for(p) + 1;
   }
-
-  void invalidate(MemRegion mr);
 
   // Provide read-only access to the card table array.
   const CardValue* byte_for_const(const void* p) const {
@@ -196,7 +204,7 @@ public:
 
   static constexpr CardValue clean_card_val()          { return clean_card; }
   static constexpr CardValue dirty_card_val()          { return dirty_card; }
-  static intptr_t clean_card_row_val()   { return clean_card_row; }
+  static constexpr intptr_t clean_card_row_val()   { return clean_card_row; }
 
   // Initialize card size
   static void initialize_card_size();
@@ -209,12 +217,12 @@ public:
 
   virtual bool is_in_young(const void* p) const = 0;
 
-  // Print a description of the memory for the card table
-  virtual void print_on(outputStream* st) const;
+  // Print card table information.
+  void print_on(outputStream* st, const char* description = "Card") const;
 
   // val_equals -> it will check that all cards covered by mr equal val
   // !val_equals -> it will check that all cards covered by mr do not equal val
-  void verify_region(MemRegion mr, CardValue val, bool val_equals) PRODUCT_RETURN;
+  virtual void verify_region(MemRegion mr, CardValue val, bool val_equals) PRODUCT_RETURN;
   void verify_not_dirty_region(MemRegion mr) PRODUCT_RETURN;
   void verify_dirty_region(MemRegion mr) PRODUCT_RETURN;
 };

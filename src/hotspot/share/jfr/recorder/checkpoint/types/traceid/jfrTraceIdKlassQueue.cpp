@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,6 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "jfr/recorder/checkpoint/types/traceid/jfrTraceId.inline.hpp"
 #include "jfr/recorder/checkpoint/types/traceid/jfrTraceIdEpoch.hpp"
 #include "jfr/recorder/checkpoint/types/traceid/jfrTraceIdKlassQueue.hpp"
@@ -31,7 +30,7 @@
 #include "jfr/utilities/jfrEpochQueue.inline.hpp"
 #include "jfr/utilities/jfrTypes.hpp"
 #include "memory/metaspace.hpp"
-#include "oops/compressedOops.hpp"
+#include "oops/compressedKlass.inline.hpp"
 #include "utilities/macros.hpp"
 
 #ifdef VM_LITTLE_ENDIAN
@@ -121,24 +120,31 @@ static traceid read_element(const u1* pos, const Klass** klass, bool compressed)
   return compressed ? read_compressed_element(pos, klass) : read_uncompressed_element(pos, klass);
 }
 
-template <typename T>
-static inline void store_traceid(T* element, traceid id, bool uncompressed) {
+static inline void store_traceid(JfrEpochQueueKlassElement* element, traceid id) {
 #ifdef VM_LITTLE_ENDIAN
   id <<= METADATA_SHIFT;
 #endif
-  element->id = uncompressed ? id | UNCOMPRESSED : id;
+  element->id = id | UNCOMPRESSED;
+}
+
+static inline void store_traceid(JfrEpochQueueNarrowKlassElement* element, traceid id) {
+  assert(id < uncompressed_threshold, "invariant");
+#ifdef VM_LITTLE_ENDIAN
+  id <<= METADATA_SHIFT;
+#endif
+  element->id = static_cast<u4>(id);
 }
 
 static void store_compressed_element(traceid id, const Klass* klass, u1* pos) {
   assert(can_compress_element(id), "invariant");
   JfrEpochQueueNarrowKlassElement* const element = new (pos) JfrEpochQueueNarrowKlassElement();
-  store_traceid(element, id, false);
+  store_traceid(element, id);
   element->compressed_klass = encode(klass);
 }
 
 static void store_uncompressed_element(traceid id, const Klass* klass, u1* pos) {
   JfrEpochQueueKlassElement* const element = new (pos) JfrEpochQueueKlassElement();
-  store_traceid(element, id, true);
+  store_traceid(element, id);
   element->klass = klass;
 }
 

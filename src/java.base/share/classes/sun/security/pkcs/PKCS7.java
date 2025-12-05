@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,7 +38,7 @@ import java.security.*;
 import java.util.function.Function;
 
 import sun.security.jca.JCAUtil;
-import sun.security.provider.SHAKE256;
+import sun.security.provider.SHA3.SHAKE256;
 import sun.security.timestamp.*;
 import sun.security.util.*;
 import sun.security.x509.*;
@@ -151,6 +151,10 @@ public class PKCS7 {
         ContentInfo block = new ContentInfo(derin, oldStyle);
         ObjectIdentifier contentType = block.contentType;
         DerValue content = block.getContent();
+
+        if (content == null) {
+            throw new ParsingException("content is null");
+        }
 
         if (contentType.equals(ContentInfo.SIGNED_DATA_OID)) {
             parseSignedData(content);
@@ -526,8 +530,23 @@ public class PKCS7 {
      * @exception SignatureException on signature handling errors.
      */
     public SignerInfo verify(SignerInfo info, byte[] bytes)
-    throws NoSuchAlgorithmException, SignatureException {
-        return info.verify(this, bytes);
+            throws NoSuchAlgorithmException, SignatureException {
+        return info.verify(this, bytes, null);
+    }
+
+    /**
+     * This verifies a given SignerInfo.
+     *
+     * @param info the signer information.
+     * @param bytes the DER encoded content information.
+     * @param cert certificate used to verify; find one inside the block if null
+     *
+     * @exception NoSuchAlgorithmException on unrecognized algorithms.
+     * @exception SignatureException on signature handling errors.
+     */
+    public SignerInfo verify(SignerInfo info, byte[] bytes, X509Certificate cert)
+            throws NoSuchAlgorithmException, SignatureException {
+        return info.verify(this, bytes, cert);
     }
 
     /**
@@ -555,17 +574,6 @@ public class PKCS7 {
             return intResult.toArray(result);
         }
         return null;
-    }
-
-    /**
-     * Returns all signerInfos which self-verify.
-     *
-     * @exception NoSuchAlgorithmException on unrecognized algorithms.
-     * @exception SignatureException on signature handling errors.
-     */
-    public SignerInfo[] verify()
-    throws NoSuchAlgorithmException, SignatureException {
-        return verify(null);
     }
 
     /**
@@ -722,16 +730,30 @@ public class PKCS7 {
         return this.oldStyle;
     }
 
+    // Generate signed data without a specified digAlgID.
+    public static byte[] generateSignedData(
+            String sigalg, Provider sigProvider,
+            PrivateKey privateKey, X509Certificate[] signerChain,
+            byte[] content, boolean internalsf, boolean directsign,
+            Function<byte[], PKCS9Attributes> ts)
+            throws SignatureException, InvalidKeyException, IOException,
+            NoSuchAlgorithmException {
+        return generateSignedData(sigalg, sigProvider, privateKey, signerChain,
+                content, internalsf, directsign,
+                null, ts);
+    }
+
     /**
      * Generate a PKCS7 data block.
      *
      * @param sigalg signature algorithm to be used
      * @param sigProvider (optional) provider
-     * @param privateKey signer's private ky
+     * @param privateKey signer's private key
      * @param signerChain signer's certificate chain
      * @param content the content to sign
      * @param internalsf whether the content should be included in output
      * @param directsign if the content is signed directly or through authattrs
+     * @param digAlgID digest alg to use; derive from other arguments if null
      * @param ts (optional) timestamper
      * @return the pkcs7 output in an array
      * @throws SignatureException if signing failed
@@ -739,18 +761,21 @@ public class PKCS7 {
      * @throws IOException should not happen here, all byte array
      * @throws NoSuchAlgorithmException if siglag is bad
      */
-    public static byte[] generateNewSignedData(
+    public static byte[] generateSignedData(
             String sigalg, Provider sigProvider,
             PrivateKey privateKey, X509Certificate[] signerChain,
             byte[] content, boolean internalsf, boolean directsign,
+            AlgorithmId digAlgID,
             Function<byte[], PKCS9Attributes> ts)
                 throws SignatureException, InvalidKeyException, IOException,
                     NoSuchAlgorithmException {
 
         Signature signer = SignatureUtil.fromKey(sigalg, privateKey, sigProvider);
 
-        AlgorithmId digAlgID = SignatureUtil.getDigestAlgInPkcs7SignerInfo(
-                signer, sigalg, privateKey, directsign);
+        if (digAlgID == null) {
+            digAlgID = SignatureUtil.getDigestAlgInPkcs7SignerInfo(
+                    signer, sigalg, privateKey, signerChain[0].getPublicKey(), directsign);
+        }
         AlgorithmId sigAlgID = SignatureUtil.fromSignature(signer, privateKey);
 
         PKCS9Attributes authAttrs = null;
@@ -758,8 +783,9 @@ public class PKCS7 {
             // MessageDigest
             byte[] md;
             String digAlgName = digAlgID.getName();
-            if (digAlgName.equals("SHAKE256") || digAlgName.equals("SHAKE256-LEN")) {
-                // No MessageDigest impl for SHAKE256 yet
+            if (digAlgName.equals("SHAKE256-LEN")) {
+                // We don't check the LEN here. Usually it is returned
+                // by SignatureUtil.getDigestAlgInPkcs7SignerInfo
                 var shaker = new SHAKE256(64);
                 shaker.update(content, 0, content.length);
                 md = shaker.digest();
@@ -842,65 +868,6 @@ public class PKCS7 {
         pkcs7.encodeSignedData(p7out);
 
         return p7out.toByteArray();
-    }
-
-    /**
-     * Assembles a PKCS #7 signed data message that optionally includes a
-     * signature timestamp.
-     *
-     * @param signature the signature bytes
-     * @param signerChain the signer's X.509 certificate chain
-     * @param content the content that is signed; specify null to not include
-     *        it in the PKCS7 data
-     * @param signatureAlgorithm the name of the signature algorithm
-     * @param tsaURI the URI of the Timestamping Authority; or null if no
-     *         timestamp is requested
-     * @param tSAPolicyID the TSAPolicyID of the Timestamping Authority as a
-     *         numerical object identifier; or null if we leave the TSA server
-     *         to choose one. This argument is only used when tsaURI is provided
-     * @return the bytes of the encoded PKCS #7 signed data message
-     * @throws NoSuchAlgorithmException The exception is thrown if the signature
-     *         algorithm is unrecognised.
-     * @throws CertificateException The exception is thrown if an error occurs
-     *         while processing the signer's certificate or the TSA's
-     *         certificate.
-     * @throws IOException The exception is thrown if an error occurs while
-     *         generating the signature timestamp or while generating the signed
-     *         data message.
-     */
-    @Deprecated(since="16", forRemoval=true)
-    public static byte[] generateSignedData(byte[] signature,
-                                            X509Certificate[] signerChain,
-                                            byte[] content,
-                                            String signatureAlgorithm,
-                                            URI tsaURI,
-                                            String tSAPolicyID,
-                                            String tSADigestAlg)
-        throws CertificateException, IOException, NoSuchAlgorithmException
-    {
-
-        // Generate the timestamp token
-        PKCS9Attributes unauthAttrs = null;
-        if (tsaURI != null) {
-            // Timestamp the signature
-            HttpTimestamper tsa = new HttpTimestamper(tsaURI);
-            byte[] tsToken = generateTimestampToken(
-                    tsa, tSAPolicyID, tSADigestAlg, signature);
-
-            // Insert the timestamp token into the PKCS #7 signer info element
-            // (as an unsigned attribute)
-            unauthAttrs =
-                new PKCS9Attributes(new PKCS9Attribute[]{
-                    new PKCS9Attribute(
-                        PKCS9Attribute.SIGNATURE_TIMESTAMP_TOKEN_OID,
-                        tsToken)});
-        }
-
-        return constructToken(signature, signerChain, content,
-                null,
-                unauthAttrs,
-                AlgorithmId.get(SignatureUtil.extractDigestAlgFromDwithE(signatureAlgorithm)),
-                AlgorithmId.get(signatureAlgorithm));
     }
 
     /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,29 @@
 #include "oops/oop.inline.hpp"
 #include "oops/oopHandle.inline.hpp"
 #include "oops/weakHandle.inline.hpp"
+
+inline void ClassLoaderData::set_next(ClassLoaderData* next) {
+  assert(this->next() == nullptr, "only link once");
+  AtomicAccess::store(&_next, next);
+}
+
+inline ClassLoaderData* ClassLoaderData::next() const {
+  return AtomicAccess::load(&_next);
+}
+
+inline void ClassLoaderData::unlink_next() {
+  assert(next()->is_unloading(), "only remove unloading clds");
+  AtomicAccess::store(&_next, _next->_next);
+}
+
+inline void ClassLoaderData::set_unloading_next(ClassLoaderData* unloading_next) {
+  assert(this->unloading_next() == nullptr, "only link once");
+  _unloading_next = unloading_next;
+}
+
+inline ClassLoaderData* ClassLoaderData::unloading_next() const {
+  return _unloading_next;
+}
 
 inline oop ClassLoaderData::class_loader() const {
   assert(!_unloading, "This oop is not available to unloading class loader data");

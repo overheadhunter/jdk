@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,6 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "memory/allocation.inline.hpp"
 #include "opto/addnode.hpp"
 #include "opto/cfgnode.hpp"
@@ -209,7 +208,7 @@ struct IdealHelper {
     return nullptr;
   }
 
-  static const Type* Value(const OverflowOp* node, PhaseTransform* phase) {
+  static const Type* Value(const OverflowOp* node, PhaseValues* phase) {
     const Type *t1 = phase->type( node->in(1) );
     const Type *t2 = phase->type( node->in(2) );
     if( t1 == Type::TOP ) return Type::TOP;

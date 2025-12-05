@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 #ifndef SHARE_OOPS_ACCESSBACKEND_HPP
 #define SHARE_OOPS_ACCESSBACKEND_HPP
 
+#include "cppstdlib/type_traits.hpp"
 #include "gc/shared/barrierSetConfig.hpp"
 #include "memory/allocation.hpp"
 #include "metaprogramming/enableIf.hpp"
@@ -33,8 +34,6 @@
 #include "runtime/globals.hpp"
 #include "utilities/debug.hpp"
 #include "utilities/globalDefinitions.hpp"
-
-#include <type_traits>
 
 // This metafunction returns either oop or narrowOop depending on whether
 // an access needs to use compressed oops or not.
@@ -80,15 +79,6 @@ namespace AccessInternal {
     return reinterpret_cast<typename HeapOopType<decorators>::type*>(
              reinterpret_cast<intptr_t>((void*)base) + byte_offset);
   }
-
-  // This metafunction returns whether it is possible for a type T to require
-  // locking to support wide atomics or not.
-  template <typename T>
-#ifdef SUPPORTS_NATIVE_CX8
-  struct PossiblyLockedAccess: public std::false_type {};
-#else
-  struct PossiblyLockedAccess: public std::integral_constant<bool, (sizeof(T) > 4)> {};
-#endif
 
   template <DecoratorSet decorators, typename T>
   struct AccessFunctionTypes {
@@ -139,13 +129,6 @@ namespace AccessInternal {
 
   template <DecoratorSet decorators, typename T, BarrierType barrier_type>
   typename AccessFunction<decorators, T, barrier_type>::type resolve_oop_barrier();
-
-  class AccessLocker {
-  public:
-    AccessLocker();
-    ~AccessLocker();
-  };
-  bool wide_atomic_needs_locking();
 
   void* field_addr(oop base, ptrdiff_t offset);
 
@@ -281,34 +264,6 @@ protected:
     HasDecorator<ds, MO_SEQ_CST>::value, T>::type
   atomic_xchg_internal(void* addr, T new_value);
 
-  // The following *_locked mechanisms serve the purpose of handling atomic operations
-  // that are larger than a machine can handle, and then possibly opt for using
-  // a slower path using a mutex to perform the operation.
-
-  template <DecoratorSet ds, typename T>
-  static inline typename EnableIf<
-    !AccessInternal::PossiblyLockedAccess<T>::value, T>::type
-  atomic_cmpxchg_maybe_locked(void* addr, T compare_value, T new_value) {
-    return atomic_cmpxchg_internal<ds>(addr, compare_value, new_value);
-  }
-
-  template <DecoratorSet ds, typename T>
-  static typename EnableIf<
-    AccessInternal::PossiblyLockedAccess<T>::value, T>::type
-  atomic_cmpxchg_maybe_locked(void* addr, T compare_value, T new_value);
-
-  template <DecoratorSet ds, typename T>
-  static inline typename EnableIf<
-    !AccessInternal::PossiblyLockedAccess<T>::value, T>::type
-  atomic_xchg_maybe_locked(void* addr, T new_value) {
-    return atomic_xchg_internal<ds>(addr, new_value);
-  }
-
-  template <DecoratorSet ds, typename T>
-  static typename EnableIf<
-    AccessInternal::PossiblyLockedAccess<T>::value, T>::type
-  atomic_xchg_maybe_locked(void* addr, T new_value);
-
 public:
   template <typename T>
   static inline void store(void* addr, T value) {
@@ -322,12 +277,12 @@ public:
 
   template <typename T>
   static inline T atomic_cmpxchg(void* addr, T compare_value, T new_value) {
-    return atomic_cmpxchg_maybe_locked<decorators>(addr, compare_value, new_value);
+    return atomic_cmpxchg_internal<decorators>(addr, compare_value, new_value);
   }
 
   template <typename T>
   static inline T atomic_xchg(void* addr, T new_value) {
-    return atomic_xchg_maybe_locked<decorators>(addr, new_value);
+    return atomic_xchg_internal<decorators>(addr, new_value);
   }
 
   template <typename T>

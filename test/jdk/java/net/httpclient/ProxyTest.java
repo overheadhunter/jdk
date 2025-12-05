@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,10 +52,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSession;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+
+import jdk.httpclient.test.lib.common.TestServerConfigurator;
 import jdk.test.lib.net.SimpleSSLContext;
 import static java.net.Proxy.NO_PROXY;
 
@@ -67,9 +70,10 @@ import static java.net.Proxy.NO_PROXY;
  *          Verifies that downgrading from HTTP/2 to HTTP/1.1 works through
  *          an SSL Tunnel connection when the client is HTTP/2 and the server
  *          and proxy are HTTP/1.1
- * @modules java.net.http
- * @library /test/lib
+ * @modules java.net.http/jdk.internal.net.http.common
+ * @library /test/lib /test/jdk/java/net/httpclient/lib
  * @build jdk.test.lib.net.SimpleSSLContext ProxyTest
+ *        jdk.httpclient.test.lib.common.TestServerConfigurator
  * @run main/othervm ProxyTest
  * @author danielfuchs
  */
@@ -103,9 +107,8 @@ public class ProxyTest {
                 he.close();
             }
         });
-
-        server.setHttpsConfigurator(new Configurator(SSLContext.getDefault()));
         InetSocketAddress addr = new InetSocketAddress(InetAddress.getLoopbackAddress(), 0);
+        server.setHttpsConfigurator(new Configurator(addr.getAddress(), SSLContext.getDefault()));
         server.bind(addr, 0);
         return server;
     }
@@ -256,13 +259,14 @@ public class ProxyTest {
                 public void run() {
                     try {
                         try {
-                            int c;
-                            while ((c = is.read()) != -1) {
-                                os.write(c);
+                            int len;
+                            byte[] buf = new byte[16 * 1024];
+                            while ((len = is.read(buf)) != -1) {
+                                os.write(buf, 0, len);
                                 os.flush();
                                 // if DEBUG prints a + or a - for each transferred
                                 // character.
-                                if (DEBUG) System.out.print(tag);
+                                if (DEBUG) System.out.print(String.valueOf(tag).repeat(len));
                             }
                             is.close();
                         } finally {
@@ -406,13 +410,18 @@ public class ProxyTest {
     }
 
     static class Configurator extends HttpsConfigurator {
-        public Configurator(SSLContext ctx) {
+        private final InetAddress serverAddr;
+
+        public Configurator(InetAddress serverAddr, SSLContext ctx) {
             super(ctx);
+            this.serverAddr = serverAddr;
         }
 
         @Override
-        public void configure (HttpsParameters params) {
-            params.setSSLParameters (getSSLContext().getSupportedSSLParameters());
+        public void configure (final HttpsParameters params) {
+            final SSLParameters parameters = getSSLContext().getSupportedSSLParameters();
+            TestServerConfigurator.addSNIMatcher(this.serverAddr, parameters);
+            params.setSSLParameters(parameters);
         }
     }
 

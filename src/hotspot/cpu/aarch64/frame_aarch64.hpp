@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2025, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -73,7 +73,8 @@
     sender_sp_offset                                 =  2,
 
     // Interpreter frames
-    interpreter_frame_oop_temp_offset                =  3, // for native calls only
+    interpreter_frame_result_handler_offset          =  3, // for native calls only
+    interpreter_frame_oop_temp_offset                =  2, // for native calls only
 
     interpreter_frame_sender_sp_offset               = -1,
     // outgoing sp before a call to an invoked method
@@ -93,7 +94,7 @@
     // Entry frames
     // n.b. these values are determined by the layout defined in
     // stubGenerator for the Java call stub
-    entry_frame_after_call_words                     = 27,
+    entry_frame_after_call_words                     = 29,
     entry_frame_call_wrapper_offset                  = -8,
 
     // we don't need a save area
@@ -140,8 +141,6 @@
     int _offset_unextended_sp; // for use in stack-chunk frames
   };
 
-  void adjust_unextended_sp() NOT_DEBUG_RETURN;
-
   // true means _sp value is correct and we can use it to get the sender's sp
   // of the compiled frame, otherwise, _sp value may be invalid and we can use
   // _fp to get the sender's sp if PreserveFramePointer is enabled.
@@ -151,13 +150,6 @@
     return (intptr_t*) addr_at(offset);
   }
 
-#ifdef ASSERT
-  // Used in frame::sender_for_{interpreter,compiled}_frame
-  static void verify_deopt_original_pc(   CompiledMethod* nm, intptr_t* unextended_sp);
-#endif
-
-  const ImmutableOopMap* get_oop_map() const;
-
  public:
   // Constructors
 
@@ -165,7 +157,7 @@
 
   frame(intptr_t* sp, intptr_t* unextended_sp, intptr_t* fp, address pc);
 
-  frame(intptr_t* sp, intptr_t* unextended_sp, intptr_t* fp, address pc, CodeBlob* cb);
+  frame(intptr_t* sp, intptr_t* unextended_sp, intptr_t* fp, address pc, CodeBlob* cb, bool allow_cb_null = false);
   // used for fast frame construction by continuations
   frame(intptr_t* sp, intptr_t* unextended_sp, intptr_t* fp, address pc, CodeBlob* cb, const ImmutableOopMap* oop_map, bool on_heap);
 

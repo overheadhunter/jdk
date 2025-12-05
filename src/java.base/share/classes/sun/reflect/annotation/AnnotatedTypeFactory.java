@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -95,8 +95,8 @@ public final class AnnotatedTypeFactory {
         } else if (type instanceof ParameterizedType t) {
             if (t.getOwnerType() == null)
                 return addTo;
-            if (t.getRawType() instanceof Class
-                    && Modifier.isStatic(((Class) t.getRawType()).getModifiers()))
+            if (t.getRawType() instanceof Class<?> c
+                    && Modifier.isStatic(c.getModifiers()))
                 return addTo;
             return nestingForType(t.getOwnerType(), addTo.pushInner());
         }
@@ -128,7 +128,7 @@ public final class AnnotatedTypeFactory {
         private final Type type;
         private final LocationInfo location;
         private final TypeAnnotation[] allOnSameTargetTypeAnnotations;
-        private final Map<Class <? extends Annotation>, Annotation> annotations;
+        private final Map<Class<? extends Annotation>, Annotation> annotations;
 
         AnnotatedTypeBaseImpl(Type type, LocationInfo location,
                 TypeAnnotation[] actualTypeAnnotations, TypeAnnotation[] allOnSameTargetTypeAnnotations) {
@@ -162,11 +162,13 @@ public final class AnnotatedTypeFactory {
         @Override
         @SuppressWarnings("unchecked")
         public final <T extends Annotation> T getDeclaredAnnotation(Class<T> annotation) {
+            Objects.requireNonNull(annotation);
             return (T)annotations.get(annotation);
         }
 
         @Override
         public final <T extends Annotation> T[] getDeclaredAnnotationsByType(Class<T> annotation) {
+            Objects.requireNonNull(annotation);
             return AnnotationSupport.getDirectlyAndIndirectlyPresent(annotations, annotation);
         }
 
@@ -178,10 +180,9 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public AnnotatedType getAnnotatedOwnerType() {
-            if (!(type instanceof Class<?>))
+            if (!(type instanceof Class<?> nested))
                 throw new IllegalStateException("Can't compute owner");
 
-            Class<?> nested = (Class<?>)type;
             Class<?> owner = nested.getDeclaringClass();
             if (owner == null) // top-level, local or anonymous
                 return null;
@@ -250,16 +251,12 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof AnnotatedType &&
+            return o instanceof AnnotatedType that &&
                 !(o instanceof AnnotatedArrayType) &&
                 !(o instanceof AnnotatedTypeVariable) &&
                 !(o instanceof AnnotatedParameterizedType) &&
-                !(o instanceof AnnotatedWildcardType)) {
-                AnnotatedType that = (AnnotatedType) o;
-                return equalsTypeAndAnnotations(that);
-            } else {
-                return false;
-            }
+                !(o instanceof AnnotatedWildcardType) &&
+                equalsTypeAndAnnotations(that);
         }
 
         @Override
@@ -334,13 +331,10 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof AnnotatedArrayType that) {
-                return equalsTypeAndAnnotations(that) &&
+            return o instanceof AnnotatedArrayType that &&
+                    equalsTypeAndAnnotations(that) &&
                     Objects.equals(getAnnotatedGenericComponentType(),
                                    that.getAnnotatedGenericComponentType());
-            } else {
-                return false;
-            }
         }
 
         @Override
@@ -378,11 +372,8 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof AnnotatedTypeVariable that) {
-                return equalsTypeAndAnnotations(that);
-            } else {
-                return false;
-            }
+            return o instanceof AnnotatedTypeVariable that
+                    && equalsTypeAndAnnotations(that);
         }
     }
 
@@ -457,12 +448,9 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof AnnotatedParameterizedType that) {
-                return equalsTypeAndAnnotations(that) &&
+            return o instanceof AnnotatedParameterizedType that &&
+                    equalsTypeAndAnnotations(that) &&
                     Arrays.equals(getAnnotatedActualTypeArguments(), that.getAnnotatedActualTypeArguments());
-            } else {
-                return false;
-            }
         }
 
         @Override
@@ -568,15 +556,12 @@ public final class AnnotatedTypeFactory {
 
         @Override
         public boolean equals(Object o) {
-            if (o instanceof AnnotatedWildcardType that) {
-                return equalsTypeAndAnnotations(that) &&
+            return o instanceof AnnotatedWildcardType that &&
+                    equalsTypeAndAnnotations(that) &&
                     // Treats ordering as significant
                     Arrays.equals(getAnnotatedLowerBounds(), that.getAnnotatedLowerBounds()) &&
                     // Treats ordering as significant
                     Arrays.equals(getAnnotatedUpperBounds(), that.getAnnotatedUpperBounds());
-            } else {
-                return false;
-            }
         }
 
         @Override

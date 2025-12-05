@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -289,14 +289,6 @@ public abstract class FileChannel
      *          specific exception</a>)</i>
      * @throws  IOException
      *          If an I/O error occurs
-     * @throws  SecurityException
-     *          If a security manager is installed and it denies an
-     *          unspecified permission required by the implementation.
-     *          In the case of the default provider, the {@link
-     *          SecurityManager#checkRead(String)} method is invoked to check
-     *          read access if the file is opened for reading. The {@link
-     *          SecurityManager#checkWrite(String)} method is invoked to check
-     *          write access if the file is opened for writing
      *
      * @since   1.7
      */
@@ -309,7 +301,7 @@ public abstract class FileChannel
         return provider.newFileChannel(path, options, attrs);
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"}) // generic array construction
+    @SuppressWarnings("rawtypes") // generic array construction
     private static final FileAttribute<?>[] NO_ATTRIBUTES = new FileAttribute[0];
 
     /**
@@ -345,14 +337,6 @@ public abstract class FileChannel
      *          specific exception</a>)</i>
      * @throws  IOException
      *          If an I/O error occurs
-     * @throws  SecurityException
-     *          If a security manager is installed and it denies an
-     *          unspecified permission required by the implementation.
-     *          In the case of the default provider, the {@link
-     *          SecurityManager#checkRead(String)} method is invoked to check
-     *          read access if the file is opened for reading. The {@link
-     *          SecurityManager#checkWrite(String)} method is invoked to check
-     *          write access if the file is opened for writing
      *
      * @since   1.7
      */
@@ -678,7 +662,7 @@ public abstract class FileChannel
      * @throws  ClosedByInterruptException
      *          If another thread interrupts the current thread while the
      *          transfer is in progress, thereby closing both channels and
-     *          setting the current thread's interrupt status
+     *          setting the current thread's interrupted status
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -748,7 +732,7 @@ public abstract class FileChannel
      * @throws  ClosedByInterruptException
      *          If another thread interrupts the current thread while the
      *          transfer is in progress, thereby closing both channels and
-     *          setting the current thread's interrupt status
+     *          setting the current thread's interrupted status
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -796,7 +780,7 @@ public abstract class FileChannel
      *          If another thread interrupts the current thread
      *          while the read operation is in progress, thereby
      *          closing the channel and setting the current thread's
-     *          interrupt status
+     *          interrupted status
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -845,7 +829,7 @@ public abstract class FileChannel
      *          If another thread interrupts the current thread
      *          while the write operation is in progress, thereby
      *          closing the channel and setting the current thread's
-     *          interrupt status
+     *          interrupted status
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -1045,52 +1029,51 @@ public abstract class FileChannel
      *          The file mapping mode, see
      *          {@link FileChannel#map(FileChannel.MapMode, long, long)};
      *          the mapping mode might affect the behavior of the returned
-     *          memory mapped segment (see {@link MemorySegment#force()}).
+     *          memory mapped segment (see {@link MemorySegment#force()})
      *
      * @param   offset
      *          The offset (expressed in bytes) within the file at which the
-     *          mapped segment is to start.
+     *          mapped segment is to start
      *
      * @param   size
      *          The size (in bytes) of the mapped memory backing the memory
-     *          segment.
+     *          segment
      *
      * @param   arena
-     *          The segment arena.
+     *          The segment arena
      *
-     * @return  A new mapped memory segment.
+     * @return  A new mapped memory segment
      *
      * @throws  IllegalArgumentException
      *          If {@code offset < 0}, {@code size < 0} or
-     *          {@code offset + size} overflows the range of {@code long}.
+     *          {@code offset + size} overflows the range of {@code long}
      *
      * @throws  IllegalStateException
-     *          If {@code arena.isAlive() == false}.
+     *          If {@code arena.isAlive() == false}
      *
      * @throws  WrongThreadException
-     *          If {@code arena} is a confined scoped arena, and this method is called from a
-     *          thread {@code T}, other than the scoped arena's owner thread.
+     *          If {@code arena} is a confined scoped arena, and this method is called
+     *          from a thread {@code T}, other than the scoped arena's owner thread
      *
      * @throws  NonReadableChannelException
      *          If the {@code mode} is {@link MapMode#READ_ONLY READ_ONLY} or
      *          an implementation specific map mode requiring read access,
-     *          but this channel was not opened for reading.
+     *          but this channel was not opened for reading
      *
      * @throws  NonWritableChannelException
      *          If the {@code mode} is {@link MapMode#READ_WRITE READ_WRITE},
      *          {@link MapMode#PRIVATE PRIVATE} or an implementation specific
      *          map mode requiring write access, but this channel was not
-     *          opened for both reading and writing.
+     *          opened for both reading and writing
      *
      * @throws  IOException
-     *          If some other I/O error occurs.
+     *          If some other I/O error occurs
      *
      * @throws  UnsupportedOperationException
-     *          If an unsupported map mode is specified.
+     *          If an unsupported map mode is specified
      *
-     * @since   19
+     * @since   22
      */
-    @PreviewFeature(feature=PreviewFeature.Feature.FOREIGN)
     public MemorySegment map(MapMode mode, long offset, long size, Arena arena)
         throws IOException
     {
@@ -1110,10 +1093,10 @@ public abstract class FileChannel
      * this method then an {@link AsynchronousCloseException} will be thrown.
      *
      * <p> If the invoking thread is interrupted while waiting to acquire the
-     * lock then its interrupt status will be set and a {@link
+     * lock then its interrupted status will be set and a {@link
      * FileLockInterruptionException} will be thrown.  If the invoker's
-     * interrupt status is set when this method is invoked then that exception
-     * will be thrown immediately; the thread's interrupt status will not be
+     * interrupted status is set when this method is invoked then that exception
+     * will be thrown immediately; the thread's interrupted status will not be
      * changed.
      *
      * <p> The region specified by the {@code position} and {@code size}

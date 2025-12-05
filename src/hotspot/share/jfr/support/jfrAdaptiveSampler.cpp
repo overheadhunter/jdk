@@ -1,5 +1,5 @@
 /*
-* Copyright (c) 2020, 2022, Oracle and/or its affiliates. All rights reserved.
+* Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
 * Copyright (c) 2020, Datadog, Inc. All rights reserved.
 * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 *
@@ -23,7 +23,6 @@
 *
 */
 
-#include "precompiled.hpp"
 #include "jfr/support/jfrAdaptiveSampler.hpp"
 #include "jfr/utilities/jfrRandom.inline.hpp"
 #include "jfr/utilities/jfrSpinlockHelper.hpp"
@@ -31,8 +30,9 @@
 #include "jfr/utilities/jfrTimeConverter.hpp"
 #include "jfr/utilities/jfrTryLock.hpp"
 #include "logging/log.hpp"
-#include "runtime/atomic.hpp"
+#include "runtime/atomicAccess.hpp"
 #include "utilities/globalDefinitions.hpp"
+
 #include <cmath>
 
 JfrSamplerWindow::JfrSamplerWindow() :
@@ -89,7 +89,7 @@ bool JfrAdaptiveSampler::sample(int64_t timestamp) {
 }
 
 inline const JfrSamplerWindow* JfrAdaptiveSampler::active_window() const {
-  return Atomic::load_acquire(&_active_window);
+  return AtomicAccess::load_acquire(&_active_window);
 }
 
 inline int64_t now() {
@@ -97,7 +97,7 @@ inline int64_t now() {
 }
 
 inline bool JfrSamplerWindow::is_expired(int64_t timestamp) const {
-  const int64_t end_ticks = Atomic::load(&_end_ticks);
+  const int64_t end_ticks = AtomicAccess::load(&_end_ticks);
   return timestamp == 0 ? now() >= end_ticks : timestamp >= end_ticks;
 }
 
@@ -108,7 +108,7 @@ bool JfrSamplerWindow::sample(int64_t timestamp, bool* expired_window) const {
 }
 
 inline bool JfrSamplerWindow::sample() const {
-  const size_t ordinal = Atomic::add(&_measured_population_size, static_cast<size_t>(1));
+  const size_t ordinal = AtomicAccess::add(&_measured_population_size, static_cast<size_t>(1));
   return ordinal <= _projected_population_size && ordinal % _sampling_interval == 0;
 }
 
@@ -139,7 +139,7 @@ void JfrAdaptiveSampler::rotate(const JfrSamplerWindow* expired) {
 
 inline void JfrAdaptiveSampler::install(const JfrSamplerWindow* next) {
   assert(next != active_window(), "invariant");
-  Atomic::release_store(&_active_window, next);
+  AtomicAccess::release_store(&_active_window, next);
 }
 
 const JfrSamplerWindow* JfrAdaptiveSampler::configure(const JfrSamplerParams& params, const JfrSamplerWindow* expired) {
@@ -197,12 +197,12 @@ inline int64_t millis_to_countertime(int64_t millis) {
 void JfrSamplerWindow::initialize(const JfrSamplerParams& params) {
   assert(_sampling_interval >= 1, "invariant");
   if (params.window_duration_ms == 0) {
-    Atomic::store(&_end_ticks, static_cast<int64_t>(0));
+    AtomicAccess::store(&_end_ticks, static_cast<int64_t>(0));
     return;
   }
-  Atomic::store(&_measured_population_size, static_cast<size_t>(0));
+  AtomicAccess::store(&_measured_population_size, static_cast<size_t>(0));
   const int64_t end_ticks = now() + millis_to_countertime(params.window_duration_ms);
-  Atomic::store(&_end_ticks, end_ticks);
+  AtomicAccess::store(&_end_ticks, end_ticks);
 }
 
 /*
@@ -222,7 +222,7 @@ JfrSamplerWindow* JfrAdaptiveSampler::set_rate(const JfrSamplerParams& params, c
     next->_projected_population_size = 0;
     return next;
   }
-  next->_sampling_interval = derive_sampling_interval(sample_size, expired);
+  next->_sampling_interval = derive_sampling_interval(static_cast<double>(sample_size), expired);
   assert(next->_sampling_interval >= 1, "invariant");
   next->_projected_population_size = sample_size * next->_sampling_interval;
   return next;
@@ -279,7 +279,7 @@ size_t JfrSamplerWindow::sample_size() const {
 }
 
 size_t JfrSamplerWindow::population_size() const {
-  return Atomic::load(&_measured_population_size);
+  return AtomicAccess::load(&_measured_population_size);
 }
 
 intptr_t JfrSamplerWindow::accumulated_debt() const {
@@ -310,12 +310,12 @@ inline size_t next_geometric(double p, double u) {
     u = 0.99;
   }
   // Inverse CDF for the geometric distribution.
-  return ceil(log(1.0 - u) / log(1.0 - p));
+  return static_cast<size_t>(ceil(log(1.0 - u) / log(1.0 - p)));
 }
 
 size_t JfrAdaptiveSampler::derive_sampling_interval(double sample_size, const JfrSamplerWindow* expired) {
   assert(sample_size > 0, "invariant");
-  const size_t population_size = project_population_size(expired);
+  const double population_size = project_population_size(expired);
   if (population_size <= sample_size) {
     return 1;
   }
@@ -325,9 +325,9 @@ size_t JfrAdaptiveSampler::derive_sampling_interval(double sample_size, const Jf
 }
 
 // The projected population size is an exponentially weighted moving average, a function of the window_lookback_count.
-inline size_t JfrAdaptiveSampler::project_population_size(const JfrSamplerWindow* expired) {
+inline double JfrAdaptiveSampler::project_population_size(const JfrSamplerWindow* expired) {
   assert(expired != nullptr, "invariant");
-  _avg_population_size = exponentially_weighted_moving_average(expired->population_size(), _ewma_population_size_alpha, _avg_population_size);
+  _avg_population_size = exponentially_weighted_moving_average(static_cast<double>(expired->population_size()), _ewma_population_size_alpha, _avg_population_size);
   return _avg_population_size;
 }
 
@@ -362,7 +362,7 @@ bool JfrGTestFixedRateSampler::initialize() {
 static void log(const JfrSamplerWindow* expired, double* sample_size_ewma) {
   assert(sample_size_ewma != nullptr, "invariant");
   if (log_is_enabled(Debug, jfr, system, throttle)) {
-    *sample_size_ewma = exponentially_weighted_moving_average(expired->sample_size(), compute_ewma_alpha_coefficient(expired->params().window_lookback_count), *sample_size_ewma);
+    *sample_size_ewma = exponentially_weighted_moving_average(static_cast<double>(expired->sample_size()), compute_ewma_alpha_coefficient(expired->params().window_lookback_count), *sample_size_ewma);
     log_debug(jfr, system, throttle)("JfrGTestFixedRateSampler: avg.sample size: %0.4f, window set point: %zu, sample size: %zu, population size: %zu, ratio: %.4f, window duration: %zu ms\n",
       *sample_size_ewma, expired->params().sample_points_per_window, expired->sample_size(), expired->population_size(),
       expired->population_size() == 0 ? 0 : (double)expired->sample_size() / (double)expired->population_size(),

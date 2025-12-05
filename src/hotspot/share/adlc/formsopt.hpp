@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -44,6 +44,7 @@ class MatchRule;
 class Attribute;
 class Effect;
 class ExpandRule;
+class Flag;
 class RewriteRule;
 class ConstructRule;
 class FormatRule;
@@ -92,6 +93,8 @@ public:
   Dict        _allocClass;         // Dictionary of allocation classes
 
   static int  _reg_ctr;         // Register counter
+  static int  words_for_regs(); // Compute the least number of words required for
+                                // registers in register masks.
   static int  RegMask_Size();   // Compute RegMask size
 
   // Public Methods
@@ -122,6 +125,7 @@ public:
 
   void dump();                     // Debug printer
   void output(FILE *fp);           // Write info to output files
+  virtual void forms_do(FormClosure* f);
 };
 
 //------------------------------RegDef-----------------------------------------
@@ -198,6 +202,7 @@ public:
 
   void dump();                  // Debug printer
   void output(FILE *fp);        // Write info to output files
+  virtual void forms_do(FormClosure* f);
 
   virtual bool has_stack_version() {
     return _stack_or_reg;
@@ -283,8 +288,8 @@ public:
 
   virtual void set_stack_version(bool flag) {
     RegClass::set_stack_version(flag);
-    assert((_rclasses[0] != NULL), "Register class NULL for condition code == true");
-    assert((_rclasses[1] != NULL), "Register class NULL for condition code == false");
+    assert((_rclasses[0] != nullptr), "Register class null for condition code == true");
+    assert((_rclasses[1] != nullptr), "Register class null for condition code == false");
     _rclasses[0]->set_stack_version(flag);
     _rclasses[1]->set_stack_version(flag);
   }
@@ -303,6 +308,11 @@ public:
   }
   char* condition_code() {
     return _condition_code;
+  }
+
+  virtual void forms_do(FormClosure* f) {
+    if (_rclasses[0]) f->do_form(_rclasses[0]);
+    if (_rclasses[1]) f->do_form(_rclasses[1]);
   }
 };
 
@@ -324,6 +334,7 @@ public:
 
   void dump();                  // Debug printer
   void output(FILE *fp);        // Write info to output files
+  virtual void forms_do(FormClosure* f);
 };
 
 
@@ -377,11 +388,7 @@ public:
   FormDict   _classdict;          // Class Name -> PipeClassForm mapping
   int        _classcnt;           // Number of classes
 
-  NameList   _noplist;            // List of NOP instructions
-  int        _nopcnt;             // Number of nop instructions
-
   bool       _variableSizeInstrs; // Indicates if this architecture has variable sized instructions
-  bool       _branchHasDelaySlot; // Indicates that branches have delay slot instructions
   int        _maxInstrsPerBundle; // Indicates the maximum number of instructions for ILP
   int        _maxBundlesPerCycle; // Indicates the maximum number of bundles for ILP
   int        _instrUnitSize;      // The minimum instruction unit size, in bytes
@@ -493,7 +500,6 @@ public:
   int               _fixed_latency;     // Always takes this number of cycles
   int               _instruction_count; // Number of instructions in first bundle
   bool              _has_multiple_bundles;  // Indicates if 1 or multiple bundles
-  bool              _has_branch_delay_slot; // Has branch delay slot as last instruction
   bool              _force_serialization;   // This node serializes relative to surrounding nodes
   bool              _may_have_no_code;      // This node may generate no code based on register allocation
 
@@ -512,13 +518,11 @@ public:
 
   void setInstructionCount(int i)    { _instruction_count = i; }
   void setMultipleBundles(bool b)    { _has_multiple_bundles = b; }
-  void setBranchDelay(bool s)        { _has_branch_delay_slot = s; }
   void setForceSerialization(bool s) { _force_serialization = s; }
   void setMayHaveNoCode(bool s)      { _may_have_no_code = s; }
 
   int  InstructionCount()   const { return _instruction_count; }
   bool hasMultipleBundles() const { return _has_multiple_bundles; }
-  bool hasBranchDelay()     const { return _has_branch_delay_slot; }
   bool forceSerialization() const { return _force_serialization; }
   bool mayHaveNoCode()      const { return _may_have_no_code; }
 
@@ -567,6 +571,7 @@ public:
 
   void dump();                     // Debug printer
   void output(FILE *fp);           // Write info to output files
+  virtual void forms_do(FormClosure* f);
 };
 
 class PeepPredicate : public Form {
@@ -689,12 +694,12 @@ public:
 class PeepChild : public Form {
 public:
   const int   _inst_num;         // Number of instruction (-1 if only named)
-  const char *_inst_op;          // Instruction's operand, NULL if number == -1
+  const char *_inst_op;          // Instruction's operand, null if number == -1
   const char *_inst_name;        // Name of the instruction
 
 public:
   PeepChild(char *inst_name)
-    : _inst_num(-1), _inst_op(NULL), _inst_name(inst_name) {};
+    : _inst_num(-1), _inst_op(nullptr), _inst_name(inst_name) {};
   PeepChild(int inst_num, char *inst_op, char *inst_name)
     : _inst_num(inst_num), _inst_op(inst_op), _inst_name(inst_name) {};
   ~PeepChild();

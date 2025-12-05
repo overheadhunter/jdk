@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,12 +22,11 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "gc/g1/g1CollectedHeap.inline.hpp"
 #include "gc/g1/g1ConcurrentMarkThread.inline.hpp"
 #include "gc/g1/g1Policy.hpp"
-#include "gc/g1/g1VMOperations.hpp"
 #include "gc/g1/g1Trace.hpp"
+#include "gc/g1/g1VMOperations.hpp"
 #include "gc/shared/concurrentGCBreakpoints.hpp"
 #include "gc/shared/gcCause.hpp"
 #include "gc/shared/gcId.hpp"
@@ -51,28 +50,31 @@ bool VM_G1CollectFull::skip_operation() const {
 void VM_G1CollectFull::doit() {
   G1CollectedHeap* g1h = G1CollectedHeap::heap();
   GCCauseSetter x(g1h, _gc_cause);
-  _gc_succeeded = g1h->do_full_collection(false /* clear_all_soft_refs */,
-                                          false /* do_maximal_compaction */);
+  bool clear_all_soft_refs = _gc_cause == GCCause::_metadata_GC_clear_soft_refs ||
+                             _gc_cause == GCCause::_wb_full_gc;
+  g1h->do_full_collection(size_t(0) /* allocation_word_size */,
+                          clear_all_soft_refs,
+                          false /* do_maximal_compaction */);
 }
 
-VM_G1TryInitiateConcMark::VM_G1TryInitiateConcMark(uint gc_count_before,
+VM_G1TryInitiateConcMark::VM_G1TryInitiateConcMark(size_t allocation_word_size,
+                                                   uint gc_count_before,
                                                    GCCause::Cause gc_cause) :
-  VM_GC_Operation(gc_count_before, gc_cause),
+  VM_GC_Collect_Operation(gc_count_before, gc_cause),
+  _word_size(allocation_word_size),
   _transient_failure(false),
+  _mark_in_progress(false),
   _cycle_already_in_progress(false),
   _whitebox_attached(false),
-  _terminating(false),
   _gc_succeeded(false)
 {}
 
 bool VM_G1TryInitiateConcMark::doit_prologue() {
   bool result = VM_GC_Operation::doit_prologue();
   // The prologue can fail for a couple of reasons. The first is that another GC
-  // got scheduled and prevented the scheduling of the concurrent start GC. The
-  // second is that the GC locker may be active and the heap can't be expanded.
-  // In both cases we want to retry the GC so that the concurrent start pause is
-  // actually scheduled. In the second case, however, we should stall until
-  // until the GC locker is no longer active and then retry the concurrent start GC.
+  // got scheduled and prevented the scheduling of the concurrent start GC.
+  // In this case we want to retry the GC so that the concurrent start pause is
+  // actually scheduled.
   if (!result) _transient_failure = true;
   return result;
 }
@@ -82,20 +84,13 @@ void VM_G1TryInitiateConcMark::doit() {
 
   GCCauseSetter x(g1h, _gc_cause);
 
-  // Record for handling by caller.
-  _terminating = g1h->concurrent_mark_is_terminating();
+  _mark_in_progress = g1h->collector_state()->mark_in_progress();
+  _cycle_already_in_progress = g1h->concurrent_mark()->cm_thread()->in_progress();
 
-  if (_terminating && GCCause::is_user_requested_gc(_gc_cause)) {
-    // When terminating, the request to initiate a concurrent cycle will be
-    // ignored by do_collection_pause_at_safepoint; instead it will just do
-    // a young-only or mixed GC (depending on phase).  For a user request
-    // there's no point in even doing that much, so done.  For some non-user
-    // requests the alternative GC might still be needed.
-  } else if (!g1h->policy()->force_concurrent_start_if_outside_cycle(_gc_cause)) {
+  if (!g1h->policy()->force_concurrent_start_if_outside_cycle(_gc_cause)) {
     // Failure to force the next GC pause to be a concurrent start indicates
-    // there is already a concurrent marking cycle in progress.  Set flag
-    // to notify the caller and return immediately.
-    _cycle_already_in_progress = true;
+    // there is already a concurrent marking cycle in progress. Flags to indicate
+    // that were already set, so return immediately.
   } else if ((_gc_cause != GCCause::_wb_breakpoint) &&
              ConcurrentGCBreakpoints::is_controlled()) {
     // WhiteBox wants to be in control of concurrent cycles, so don't try to
@@ -103,55 +98,32 @@ void VM_G1TryInitiateConcMark::doit() {
     // request will be remembered for a later partial collection, even though
     // we've rejected this request.
     _whitebox_attached = true;
-  } else if (!g1h->do_collection_pause_at_safepoint()) {
-    // Failure to perform the collection at all occurs because GCLocker is
-    // active, and we have the bad luck to be the collection request that
-    // makes a later _gc_locker collection needed.  (Else we would have hit
-    // the GCLocker check in the prologue.)
-    _transient_failure = true;
-  } else if (g1h->should_upgrade_to_full_gc()) {
-    _gc_succeeded = g1h->upgrade_to_full_collection();
   } else {
+    g1h->do_collection_pause_at_safepoint(_word_size);
     _gc_succeeded = true;
   }
 }
 
-VM_G1CollectForAllocation::VM_G1CollectForAllocation(size_t         word_size,
-                                                     uint           gc_count_before,
+VM_G1CollectForAllocation::VM_G1CollectForAllocation(size_t word_size,
+                                                     uint gc_count_before,
                                                      GCCause::Cause gc_cause) :
-  VM_CollectForAllocation(word_size, gc_count_before, gc_cause),
-  _gc_succeeded(false) {}
+  VM_CollectForAllocation(word_size, gc_count_before, gc_cause) {}
 
 void VM_G1CollectForAllocation::doit() {
   G1CollectedHeap* g1h = G1CollectedHeap::heap();
-
-  if (_word_size > 0) {
-    // An allocation has been requested. So, try to do that first.
-    _result = g1h->attempt_allocation_at_safepoint(_word_size,
-                                                   false /* expect_null_cur_alloc_region */);
-    if (_result != nullptr) {
-      // If we can successfully allocate before we actually do the
-      // pause then we will consider this pause successful.
-      _gc_succeeded = true;
-      return;
-    }
-  }
-
   GCCauseSetter x(g1h, _gc_cause);
   // Try a partial collection of some kind.
-  _gc_succeeded = g1h->do_collection_pause_at_safepoint();
+  g1h->do_collection_pause_at_safepoint(_word_size);
 
-  if (_gc_succeeded) {
-    if (_word_size > 0) {
-      // An allocation had been requested. Do it, eventually trying a stronger
-      // kind of GC.
-      _result = g1h->satisfy_failed_allocation(_word_size, &_gc_succeeded);
-    } else if (g1h->should_upgrade_to_full_gc()) {
-      // There has been a request to perform a GC to free some space. We have no
-      // information on how much memory has been asked for. In case there are
-      // absolutely no regions left to allocate into, do a full compaction.
-      _gc_succeeded = g1h->upgrade_to_full_collection();
-    }
+  if (_word_size > 0) {
+    // An allocation had been requested. Do it, eventually trying a stronger
+    // kind of GC.
+    _result = g1h->satisfy_failed_allocation(_word_size);
+  } else if (g1h->should_upgrade_to_full_gc()) {
+    // There has been a request to perform a GC to free some space. We have no
+    // information on how much memory has been asked for. In case there are
+    // absolutely no regions left to allocate into, do a full compaction.
+    g1h->upgrade_to_full_collection();
   }
 }
 
@@ -168,13 +140,21 @@ void VM_G1PauseConcurrent::doit() {
 
   G1ConcGCMonitoringScope monitoring_scope(g1h->monitoring_support());
   SvcGCMarker sgcm(SvcGCMarker::CONCURRENT);
-  IsGCActiveMark x;
+  IsSTWGCActiveMark x;
 
   work();
 }
 
 bool VM_G1PauseConcurrent::doit_prologue() {
   Heap_lock->lock();
+  G1CollectedHeap* g1h = G1CollectedHeap::heap();
+  if (g1h->is_shutting_down()) {
+    Heap_lock->unlock();
+    // JVM shutdown has started. This ensures that any further operations will be properly aborted
+    // and will not interfere with the shutdown process.
+    g1h->concurrent_mark()->abort_marking_threads();
+    return false;
+  }
   return true;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -84,7 +84,7 @@ public class CompilerToVMHelper {
     }
 
     public static HotSpotResolvedObjectType lookupType(String name,
-            Class<?> accessClass, boolean resolve) throws ClassNotFoundException {
+            Class<?> accessClass, boolean resolve) throws NoClassDefFoundError {
         if (accessClass == null) {
             throw new NullPointerException();
         }
@@ -94,15 +94,11 @@ public class CompilerToVMHelper {
 
     public static HotSpotResolvedObjectType lookupTypeHelper(String name,
             Class<?> accessingClass, boolean resolve) {
-        try {
-            return lookupType(name, accessingClass, resolve);
-        } catch (ClassNotFoundException e) {
-            throw (NoClassDefFoundError) new NoClassDefFoundError().initCause(e);
-        }
+        return lookupType(name, accessingClass, resolve);
     }
 
-    public static Object resolvePossiblyCachedConstantInPool(ConstantPool constantPool, int cpi) {
-        DirectHotSpotObjectConstantImpl obj = (DirectHotSpotObjectConstantImpl) CTVM.resolvePossiblyCachedConstantInPool((HotSpotConstantPool) constantPool, cpi);
+    public static Object lookupConstantInPool(ConstantPool constantPool, int cpi, boolean resolve) {
+        DirectHotSpotObjectConstantImpl obj = (DirectHotSpotObjectConstantImpl) CTVM.lookupConstantInPool((HotSpotConstantPool) constantPool, cpi, resolve);
         return obj.object;
     }
 
@@ -132,11 +128,6 @@ public class CompilerToVMHelper {
         return CTVM.lookupMethodInPool((HotSpotConstantPool) constantPool, cpi, opcode, null);
     }
 
-    public static void resolveInvokeDynamicInPool(
-            ConstantPool constantPool, int cpi) {
-        CTVM.resolveInvokeDynamicInPool((HotSpotConstantPool) constantPool, cpi);
-    }
-
     public static void resolveInvokeHandleInPool(
             ConstantPool constantPool, int cpi) {
         CTVM.resolveInvokeHandleInPool((HotSpotConstantPool) constantPool, cpi);
@@ -152,14 +143,9 @@ public class CompilerToVMHelper {
         return CTVM.resolveFieldInPool((HotSpotConstantPool) constantPool, cpi, (HotSpotResolvedJavaMethodImpl) method, opcode, info);
     }
 
-    public static int constantPoolRemapInstructionOperandFromCache(
-            ConstantPool constantPool, int cpci) {
-        return CTVM.constantPoolRemapInstructionOperandFromCache((HotSpotConstantPool) constantPool, cpci);
-    }
-
     public static Object lookupAppendixInPool(
-            ConstantPool constantPool, int cpi) {
-        return CTVM.lookupAppendixInPool((HotSpotConstantPool) constantPool, cpi);
+            ConstantPool constantPool, int cpi, int opcode) {
+        return CTVM.lookupAppendixInPool((HotSpotConstantPool) constantPool, cpi, opcode);
     }
 
     public static int installCode(TargetDescription target,
@@ -243,8 +229,8 @@ public class CompilerToVMHelper {
         CTVM.reprofile((HotSpotResolvedJavaMethodImpl)method);
     }
 
-    public static void invalidateHotSpotNmethod(HotSpotNmethod nmethodMirror, boolean deoptimize) {
-        CTVM.invalidateHotSpotNmethod(nmethodMirror, deoptimize);
+    public static void invalidateHotSpotNmethod(HotSpotNmethod nmethodMirror, boolean deoptimize, int invalidationReason) {
+        CTVM.invalidateHotSpotNmethod(nmethodMirror, deoptimize, invalidationReason);
     }
 
     public static long[] collectCounters() {
@@ -275,11 +261,6 @@ public class CompilerToVMHelper {
             int initialSkip,
             InspectedFrameVisitor<T> visitor) {
         return CTVM.iterateFrames(initialMethods, matchingMethods, initialSkip, visitor);
-    }
-
-    public static void materializeVirtualObjects(
-            HotSpotStackFrameReference stackFrame, boolean invalidate) {
-        CTVM.materializeVirtualObjects(stackFrame, invalidate);
     }
 
     public static int getVtableIndexForInterfaceMethod(HotSpotResolvedObjectType type,
@@ -325,7 +306,7 @@ public class CompilerToVMHelper {
     }
     private static class InstalledCodeStub extends HotSpotNmethod {
         private InstalledCodeStub(HotSpotResolvedJavaMethodImpl method, String name, long address, long entryPoint) {
-            super(method, name, false, 0);
+            super(method, name, false, true, 0);
             this.address = address;
             this.entryPoint = entryPoint;
         }

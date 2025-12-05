@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,9 @@
 /*
  * @test
  * @bug 8272586
+ * @requires vm.flagless
  * @requires vm.compiler2.enabled
+ * @requires test.thread.factory == null
  * @summary Test that abstract machine code is dumped for the top frames in a hs-err log
  * @library /test/lib
  * @modules java.base/jdk.internal.misc
@@ -114,7 +116,7 @@ public class MachCodeFramesInErrorFile {
      * expected to have a min number of MachCode sections.
      */
     private static void run(boolean crashInJava) throws Exception {
-        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(
+        ProcessBuilder pb = ProcessTools.createLimitedTestJavaProcessBuilder(
             "-Xmx64m", "--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED",
             "-XX:-CreateCoredumpOnCrash",
             "-Xcomp",

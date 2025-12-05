@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,8 @@
  */
 
 package java.util;
+
+import jdk.internal.javac.PreviewFeature;
 
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -114,8 +116,9 @@ import java.io.Serializable;
  *
  * <h2><a id="unmodifiable">Unmodifiable Maps</a></h2>
  * <p>The {@link Map#of() Map.of},
- * {@link Map#ofEntries(Map.Entry...) Map.ofEntries}, and
- * {@link Map#copyOf Map.copyOf}
+ * {@link Map#ofEntries(Map.Entry...) Map.ofEntries},
+ * {@link Map#copyOf Map.copyOf}, and
+ * {@link Map#ofLazy(Set, Function)}
  * static factory methods provide a convenient way to create unmodifiable maps.
  * The {@code Map}
  * instances created by these methods have the following characteristics:
@@ -128,7 +131,8 @@ import java.io.Serializable;
  * Map to behave inconsistently or its contents to appear to change.
  * <li>They disallow {@code null} keys and values. Attempts to create them with
  * {@code null} keys or values result in {@code NullPointerException}.
- * <li>They are serializable if all keys and values are serializable.
+ * <li>Unless otherwise specified, they are serializable if all keys and values
+ * are serializable.
  * <li>They reject duplicate keys at creation time. Duplicate keys
  * passed to a static factory method result in {@code IllegalArgumentException}.
  * <li>The iteration order of mappings is unspecified and is subject to change.
@@ -737,8 +741,8 @@ public interface Map<K, V> {
     /**
      * Replaces each entry's value with the result of invoking the given
      * function on that entry until all entries have been processed or the
-     * function throws an exception.  Exceptions thrown by the function are
-     * relayed to the caller.
+     * function throws an exception (optional operation). Exceptions thrown
+     * by the function are relayed to the caller.
      *
      * @implSpec
      * <p>The default implementation is equivalent to, for this {@code map}:
@@ -753,8 +757,9 @@ public interface Map<K, V> {
      * concurrency properties.
      *
      * @param function the function to apply to each entry
-     * @throws UnsupportedOperationException if the {@code set} operation
-     *         is not supported by this map's entry set iterator.
+     * @throws UnsupportedOperationException if the {@code replaceAll} operation
+     *         is not supported by this map
+     *         ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of a replacement value
      *         prevents it from being stored in this map
      *         ({@linkplain Collection##optional-restrictions optional})
@@ -796,7 +801,7 @@ public interface Map<K, V> {
     /**
      * If the specified key is not already associated with a value (or is mapped
      * to {@code null}) associates it with the given value and returns
-     * {@code null}, else returns the current value.
+     * {@code null}, else returns the current value (optional operation).
      *
      * @implSpec
      * The default implementation is equivalent to, for this {@code map}:
@@ -821,7 +826,7 @@ public interface Map<K, V> {
      *         (A {@code null} return can also indicate that the map
      *         previously associated {@code null} with the key,
      *         if the implementation supports null values.)
-     * @throws UnsupportedOperationException if the {@code put} operation
+     * @throws UnsupportedOperationException if the {@code putIfAbsent} operation
      *         is not supported by this map
      *         ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the key or value is of an inappropriate
@@ -845,7 +850,7 @@ public interface Map<K, V> {
 
     /**
      * Removes the entry for the specified key only if it is currently
-     * mapped to the specified value.
+     * mapped to the specified value (optional operation).
      *
      * @implSpec
      * The default implementation is equivalent to, for this {@code map}:
@@ -889,7 +894,7 @@ public interface Map<K, V> {
 
     /**
      * Replaces the entry for the specified key only if currently
-     * mapped to the specified value.
+     * mapped to the specified value (optional operation).
      *
      * @implSpec
      * The default implementation is equivalent to, for this {@code map}:
@@ -915,8 +920,9 @@ public interface Map<K, V> {
      * @param oldValue value expected to be associated with the specified key
      * @param newValue value to be associated with the specified key
      * @return {@code true} if the value was replaced
-     * @throws UnsupportedOperationException if the {@code put} operation
-     *         is not supported by this map ({@linkplain Collection##optional-restrictions optional})
+     * @throws UnsupportedOperationException if the {@code replace} operation
+     *         is not supported by this map
+     *         ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of a specified key or value
      *         prevents it from being stored in this map
      * @throws NullPointerException if a specified key or newValue is null,
@@ -939,7 +945,7 @@ public interface Map<K, V> {
 
     /**
      * Replaces the entry for the specified key only if it is
-     * currently mapped to some value.
+     * currently mapped to some value (optional operation).
      *
      * @implSpec
      * The default implementation is equivalent to, for this {@code map}:
@@ -963,7 +969,7 @@ public interface Map<K, V> {
      *         (A {@code null} return can also indicate that the map
      *         previously associated {@code null} with the key,
      *         if the implementation supports null values.)
-     * @throws UnsupportedOperationException if the {@code put} operation
+     * @throws UnsupportedOperationException if the {@code replace} operation
      *         is not supported by this map
      *         ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of the specified key or value
@@ -986,7 +992,7 @@ public interface Map<K, V> {
     /**
      * If the specified key is not already associated with a value (or is mapped
      * to {@code null}), attempts to compute its value using the given mapping
-     * function and enters it into this map unless {@code null}.
+     * function and enters it into this map unless {@code null} (optional operation).
      *
      * <p>If the mapping function returns {@code null}, no mapping is recorded.
      * If the mapping function itself throws an (unchecked) exception, the
@@ -1046,9 +1052,8 @@ public interface Map<K, V> {
      * @throws NullPointerException if the specified key is null and
      *         this map does not support null keys, or the mappingFunction
      *         is null
-     * @throws UnsupportedOperationException if the {@code put} operation
-     *         is not supported by this map
-     *         ({@linkplain Collection##optional-restrictions optional})
+     * @throws UnsupportedOperationException if the {@code computeIfAbsent} operation is not
+     *         supported by this map ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of the specified key or value
      *         prevents it from being stored in this map
      *         ({@linkplain Collection##optional-restrictions optional})
@@ -1074,7 +1079,8 @@ public interface Map<K, V> {
 
     /**
      * If the value for the specified key is present and non-null, attempts to
-     * compute a new mapping given the key and its current mapped value.
+     * compute a new mapping given the key and its current mapped value
+     * (optional operation).
      *
      * <p>If the remapping function returns {@code null}, the mapping is removed.
      * If the remapping function itself throws an (unchecked) exception, the
@@ -1123,9 +1129,8 @@ public interface Map<K, V> {
      * @throws NullPointerException if the specified key is null and
      *         this map does not support null keys, or the
      *         remappingFunction is null
-     * @throws UnsupportedOperationException if the {@code put} operation
-     *         is not supported by this map
-     *         ({@linkplain Collection##optional-restrictions optional})
+     * @throws UnsupportedOperationException if the {@code computeIfPresent} operation is not
+     *         supported by this map ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of the specified key or value
      *         prevents it from being stored in this map
      *         ({@linkplain Collection##optional-restrictions optional})
@@ -1154,9 +1159,9 @@ public interface Map<K, V> {
 
     /**
      * Attempts to compute a mapping for the specified key and its current
-     * mapped value (or {@code null} if there is no current mapping). For
-     * example, to either create or append a {@code String} msg to a value
-     * mapping:
+     * mapped value, or {@code null} if there is no current mapping (optional
+     * operation). For example, to either create or append a {@code String}
+     * msg to a value mapping:
      *
      * <pre> {@code
      * map.compute(key, (k, v) -> (v == null) ? msg : v.concat(msg))}</pre>
@@ -1209,9 +1214,8 @@ public interface Map<K, V> {
      * @throws NullPointerException if the specified key is null and
      *         this map does not support null keys, or the
      *         remappingFunction is null
-     * @throws UnsupportedOperationException if the {@code put} operation
-     *         is not supported by this map
-               ({@linkplain Collection##optional-restrictions optional})
+     * @throws UnsupportedOperationException if the {@code compute} operation is not
+     *         supported by this map ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of the specified key or value
      *         prevents it from being stored in this map
      *         ({@linkplain Collection##optional-restrictions optional})
@@ -1245,9 +1249,9 @@ public interface Map<K, V> {
 
     /**
      * If the specified key is not already associated with a value or is
-     * associated with null, associates it with the given non-null value.
-     * Otherwise, replaces the associated value with the results of the given
-     * remapping function, or removes if the result is {@code null}. This
+     * associated with null, associates it with the given non-null value (optional
+     * operation). Otherwise, replaces the associated value with the results of
+     * the given remapping function, or removes if the result is {@code null}. This
      * method may be of use when combining multiple mapped values for a key.
      * For example, to either create or append a {@code String msg} to a
      * value mapping:
@@ -1304,9 +1308,8 @@ public interface Map<K, V> {
      *        present
      * @return the new value associated with the specified key, or null if no
      *         value is associated with the key
-     * @throws UnsupportedOperationException if the {@code put} operation
-     *         is not supported by this map
-     *         ({@linkplain Collection##optional-restrictions optional})
+     * @throws UnsupportedOperationException if the {@code merge} operation is not
+     *         supported by this map ({@linkplain Collection##optional-restrictions optional})
      * @throws ClassCastException if the class of the specified key or value
      *         prevents it from being stored in this map
      *         ({@linkplain Collection##optional-restrictions optional})
@@ -1659,7 +1662,6 @@ public interface Map<K, V> {
      * @since 9
      */
     @SafeVarargs
-    @SuppressWarnings("varargs")
     static <K, V> Map<K, V> ofEntries(Entry<? extends K, ? extends V>... entries) {
         if (entries.length == 0) { // implicit null check of entries array
             @SuppressWarnings("unchecked")
@@ -1748,4 +1750,79 @@ public interface Map<K, V> {
             return (Map<K,V>)Map.ofEntries(map.entrySet().toArray(new Entry[0]));
         }
     }
+
+    /**
+     * {@return a new lazily computed map with the provided {@code keys}}
+     * <p>
+     * The returned map is an {@linkplain Collection##unmodifiable unmodifiable} map whose
+     * keys are known at construction. The map's values are lazily computed via the
+     * provided {@code computingFunction} when they are first accessed
+     * (e.g., via {@linkplain Map#get(Object) Map::get}).
+     * <p>
+     * The provided computing function is guaranteed to be successfully invoked
+     * at most once per key, even in a multi-threaded environment. Competing
+     * threads accessing a value already under computation will block until an element
+     * is computed or the computing function completes abnormally.
+     * <p>
+     * If invoking the provided computing function throws an exception, it
+     * is rethrown to the initial caller and no value associated with the provided key
+     * is recorded.
+     * <p>
+     * If the provided computing function returns {@code null},
+     * a {@linkplain NullPointerException} will be thrown. Hence, just like other
+     * unmodifiable maps created via the {@code Map::of} factories, a lazy map
+     * cannot contain {@code null} values. Clients that want to use nullable values can
+     * wrap values into an {@linkplain Optional} holder.
+     * <p>
+     * The values of any {@link Map#values()} or {@link Map#entrySet()} views of
+     * the returned map are also lazily computed.
+     * <p>
+     * If the provided computing function recursively calls itself or
+     * the returned lazy map for the same key, an {@linkplain IllegalStateException}
+     * will be thrown.
+     * <p>
+     * The returned map's {@linkplain Object Object methods};
+     * {@linkplain Object#equals(Object) equals()},
+     * {@linkplain Object#hashCode() hashCode()}, and
+     * {@linkplain Object#toString() toString()} methods may trigger initialization of
+     * one or more lazy elements.
+     * <p>
+     * The returned lazy map strongly references its underlying
+     * computing function used to compute values at least as long as there are
+     * uncomputed values.
+     * <p>
+     * The returned Map is <em>not</em> {@linkplain Serializable}.
+     *
+     * @implNote  after all values have been initialized successfully, the computing
+     *            function is no longer strongly referenced and becomes eligible for
+     *            garbage collection.
+     *
+     * @param keys              the (non-null) keys in the returned computed map
+     * @param computingFunction to invoke whenever an associated value is first accessed
+     * @param <K>               the type of keys maintained by the returned map
+     * @param <V>               the type of mapped values in the returned map
+     * @throws NullPointerException if the provided set of {@code keys} is {@code null}
+     *         or if the set of {@code keys} contains a {@code null} element.
+     *
+     * @see LazyConstant
+     * @since 26
+     */
+    @PreviewFeature(feature = PreviewFeature.Feature.LAZY_CONSTANTS)
+    static <K, V> Map<K, V> ofLazy(Set<? extends K> keys,
+                                   Function<? super K, ? extends V> computingFunction) {
+        // Protect against TOC-TOU attacks.
+        // Also, implicit null check of `keys` and all its elements
+        final Set<K> keyCopies = Set.copyOf(keys);
+        Objects.requireNonNull(computingFunction);
+        // We need to check the instance type using the original `keys` parameter.
+        if (keys instanceof EnumSet<?> && !keyCopies.isEmpty()) {
+            @SuppressWarnings("unchecked")
+            var enumMap = (Map<K, V>) LazyCollections.ofLazyMapWithEnumKeys(keyCopies, computingFunction);
+            return enumMap;
+        } else {
+            // A computed map is not Serializable, so we cannot return `Map.of()` if `keys.isEmpty()`
+            return LazyCollections.ofLazyMap(keyCopies, computingFunction);
+        }
+    }
+
 }

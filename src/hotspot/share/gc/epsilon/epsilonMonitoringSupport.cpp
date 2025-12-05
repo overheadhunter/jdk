@@ -22,9 +22,8 @@
  *
  */
 
-#include "precompiled.hpp"
-#include "gc/epsilon/epsilonMonitoringSupport.hpp"
 #include "gc/epsilon/epsilonHeap.hpp"
+#include "gc/epsilon/epsilonMonitoringSupport.hpp"
 #include "gc/shared/generationCounters.hpp"
 #include "memory/allocation.hpp"
 #include "memory/metaspaceCounters.hpp"
@@ -33,8 +32,6 @@
 #include "services/memoryService.hpp"
 
 class EpsilonSpaceCounters: public CHeapObj<mtGC> {
-  friend class VMStructs;
-
 private:
   PerfVariable* _capacity;
   PerfVariable* _used;
@@ -91,8 +88,8 @@ public:
           _heap(heap)
   {};
 
-  virtual void update_all() {
-    _current_size->set_value(_heap->capacity());
+  void update_all() {
+    GenerationCounters::update_capacity(_heap->capacity());
   }
 };
 
@@ -113,4 +110,3 @@ void EpsilonMonitoringSupport::update_counters() {
     MetaspaceCounters::update_performance_counters();
   }
 }
-

@@ -153,7 +153,7 @@
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
  *
- * @run main/othervm   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
+ * @run main/othervm/timeout=480   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
  *                     -Xbatch -XX:-TieredCompilation
  *                     -XX:CompileCommand=dontinline,*::*dontinline*
  *                     -XX:CompileCommand=dontinline,*::*dontjit*
@@ -173,7 +173,7 @@
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
  *
- * @run main/othervm   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
+ * @run main/othervm/timeout=480   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
  *                     -Xbatch -XX:-TieredCompilation
  *                     -XX:CompileCommand=dontinline,*::*dontinline*
  *                     -XX:CompileCommand=dontinline,*::*dontjit*
@@ -193,7 +193,7 @@
  * @build jdk.test.whitebox.WhiteBox
  * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
  *
- * @run main/othervm   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
+ * @run main/othervm/timeout=480   -XX:+UnlockDiagnosticVMOptions -XX:+ShowHiddenFrames -XX:+WhiteBoxAPI -Xbootclasspath/a:.
  *                     -Xbatch -XX:-TieredCompilation
  *                     -XX:CompileCommand=dontinline,*::*dontinline*
  *                     -XX:CompileCommand=dontinline,*::*dontjit*
@@ -798,7 +798,7 @@ public class BasicExt {
                 cont.stackWalker()
                 .walk(fs -> fs.map(StackWalker.StackFrame::getMethodName).collect(Collectors.toList()));
             assertEquals(frames, cont.isDone() ? List.of()
-                         : Arrays.asList("yield", "ord104_testMethod_dontinline",
+                         : Arrays.asList("yield0", "yield", "ord104_testMethod_dontinline",
                                          "ord103_testMethod_dontinline",
                                          "ord102_testMethod_dontinline",
                                          "ord101_testMethod_dontinline",

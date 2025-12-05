@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,6 +46,9 @@ public abstract class VectorReduction {
     private long[] longsB;
     private long[] longsC;
     private long[] longsD;
+    private double[] doublesA;
+    private double[] doublesB;
+    private double[] doublesC;
 
     @Param("0")
     private int seed;
@@ -63,6 +66,9 @@ public abstract class VectorReduction {
         longsB = new long[COUNT];
         longsC = new long[COUNT];
         longsD = new long[COUNT];
+        doublesA = new double[COUNT];
+        doublesB = new double[COUNT];
+        doublesC = new double[COUNT];
 
         for (int i = 0; i < COUNT; i++) {
             intsA[i] = r.nextInt();
@@ -71,6 +77,9 @@ public abstract class VectorReduction {
             longsA[i] = r.nextLong();
             longsB[i] = r.nextLong();
             longsC[i] = r.nextLong();
+            doublesA[i] = r.nextDouble();
+            doublesB[i] = r.nextDouble();
+            doublesC[i] = r.nextDouble();
         }
     }
 
@@ -135,6 +144,16 @@ public abstract class VectorReduction {
     }
 
     @Benchmark
+    public void mulRedD(Blackhole bh) {
+        double resD = 0.0;
+        for (int i = 0; i < COUNT; i++) {
+            resD += (doublesA[i] * doublesB[i]) + (doublesA[i] * doublesC[i]) +
+                     (doublesB[i] * doublesC[i]);
+        }
+        bh.consume(resD);
+    }
+
+    @Benchmark
     public void andRedIPartiallyUnrolled(Blackhole bh) {
         int resI = 0xFFFF;
         for (int i = 0; i < COUNT / 2; i++) {
@@ -157,14 +176,14 @@ public abstract class VectorReduction {
         }
     }
 
-    @Fork(value = 2, jvmArgsPrepend = {
+    @Fork(value = 2, jvmArgs = {
         "-XX:+UseSuperWord"
     })
     public static class WithSuperword extends VectorReduction {
 
     }
 
-    @Fork(value = 2, jvmArgsPrepend = {
+    @Fork(value = 2, jvmArgs = {
         "-XX:-UseSuperWord"
     })
     public static class NoSuperword extends VectorReduction {

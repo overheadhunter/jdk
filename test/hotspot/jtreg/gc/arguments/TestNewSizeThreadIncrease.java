@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,6 +30,7 @@ package gc.arguments;
  * @library /test/lib
  * @library /
  * @requires vm.gc.Serial
+ * @requires test.thread.factory == null
  * @modules java.base/jdk.internal.misc
  *          java.management
  * @run driver gc.arguments.TestNewSizeThreadIncrease
@@ -65,14 +66,13 @@ public class TestNewSizeThreadIncrease {
   }
 
   static void runNewSizeThreadIncreaseTest(String expectedValue, boolean isNewsizeChanged) throws Exception {
-    ProcessBuilder pb = GCArguments.createJavaProcessBuilder("-XX:+UseSerialGC",
-                                                             "-Xms96M",
-                                                             "-Xmx128M",
-                                                             "-XX:NewRatio=2",
-                                                             "-Xlog:gc+heap+ergo=debug",
-                                                             "-XX:NewSizeThreadIncrease="+expectedValue,
-                                                             GCTest.class.getName());
-    OutputAnalyzer output = new OutputAnalyzer(pb.start());
+    OutputAnalyzer output = GCArguments.executeLimitedTestJava("-XX:+UseSerialGC",
+                                                               "-Xms96M",
+                                                               "-Xmx128M",
+                                                               "-XX:NewRatio=2",
+                                                               "-Xlog:gc+heap+ergo=debug",
+                                                               "-XX:NewSizeThreadIncrease="+expectedValue,
+                                                               GCTest.class.getName());
 
     output.shouldHaveExitValue(0);
 

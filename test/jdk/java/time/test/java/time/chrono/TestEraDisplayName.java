@@ -1,12 +1,10 @@
 /*
- * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * published by the Free Software Foundation.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -42,7 +40,7 @@ import static org.testng.Assert.assertFalse;
  * chrono implementation.
  * Note: The exact result may depend on locale data provider's implementation.
  *
- * @bug 8171049 8224105 8240626
+ * @bug 8171049 8224105 8240626 8354548
  */
 @Test
 public class TestEraDisplayName {
@@ -134,7 +132,7 @@ public class TestEraDisplayName {
             { MinguoEra.ROC,        TextStyle.NARROW,   Locale.TAIWAN,  "\u6c11\u570b" },
 
             // HijrahEra
-            { HijrahEra.AH, TextStyle.FULL,     Locale.US,  "AH" },
+            { HijrahEra.AH, TextStyle.FULL,     Locale.US,  "Anno Hegirae" },
             { HijrahEra.AH, TextStyle.FULL,     EGYPT,      "\u0647\u0640" },
             { HijrahEra.AH, TextStyle.SHORT,    Locale.US,  "AH" },
             { HijrahEra.AH, TextStyle.SHORT,    EGYPT,      "\u0647\u0640" },

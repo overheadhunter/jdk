@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,8 @@
 #define SHARE_JFR_RECORDER_STORAGE_JFRBUFFER_HPP
 
 #include "memory/allocation.hpp"
-#include "runtime/atomic.hpp"
+#include "runtime/atomicAccess.hpp"
+#include "utilities/sizes.hpp"
 
 //
 // Represents a piece of committed memory.
@@ -111,7 +112,7 @@ class JfrBuffer {
 
   void set_pos(u1* new_pos) {
     assert(new_pos <= end(), "invariant");
-    Atomic::release_store(&_pos, new_pos);
+    AtomicAccess::release_store(&_pos, new_pos);
   }
 
   void set_pos(size_t size) {
@@ -134,17 +135,17 @@ class JfrBuffer {
   }
 
   size_t free_size() const {
-    return end() - Atomic::load_acquire(&_pos);
+    return end() - AtomicAccess::load_acquire(&_pos);
   }
 
   size_t unflushed_size() const;
 
   bool empty() const {
-    return Atomic::load_acquire(&_pos) == start();
+    return AtomicAccess::load_acquire(&_pos) == start();
   }
 
   const void* identity() const {
-    return Atomic::load_acquire(&_identity);
+    return AtomicAccess::load_acquire(&_identity);
   }
 
   // use only if implied owner already
@@ -174,6 +175,11 @@ class JfrBuffer {
   u1 context() const;
   void set_context(u1 context);
   void clear_context();
+
+  // Code generation
+  static ByteSize pos_offset();
+  static ByteSize flags_offset();
+
 };
 
 #endif // SHARE_JFR_RECORDER_STORAGE_JFRBUFFER_HPP

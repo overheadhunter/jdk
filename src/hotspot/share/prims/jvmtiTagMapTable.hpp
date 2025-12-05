@@ -28,7 +28,7 @@
 #include "gc/shared/collectedHeap.hpp"
 #include "memory/allocation.hpp"
 #include "oops/weakHandle.hpp"
-#include "utilities/resizeableResourceHash.hpp"
+#include "utilities/resizableHashTable.hpp"
 
 class JvmtiEnv;
 class JvmtiTagMapKeyClosure;
@@ -50,11 +50,11 @@ class JvmtiTagMapKey : public CHeapObj<mtServiceability> {
 
   oop object() const;
   oop object_no_keepalive() const;
-  void release_weak_handle() const;
+  void release_weak_handle();
 
   static unsigned get_hash(const JvmtiTagMapKey& entry) {
     assert(entry._obj != nullptr, "must lookup obj to hash");
-    return entry._obj->identity_hash();
+    return (unsigned)entry._obj->identity_hash();
   }
 
   static bool equals(const JvmtiTagMapKey& lhs, const JvmtiTagMapKey& rhs) {
@@ -65,14 +65,14 @@ class JvmtiTagMapKey : public CHeapObj<mtServiceability> {
 };
 
 typedef
-ResizeableResourceHashtable <JvmtiTagMapKey, jlong,
+ResizeableHashTable <JvmtiTagMapKey, jlong,
                               AnyObj::C_HEAP, mtServiceability,
                               JvmtiTagMapKey::get_hash,
-                              JvmtiTagMapKey::equals> ResizableResourceHT;
+                              JvmtiTagMapKey::equals> ResizableHT;
 
 class JvmtiTagMapTable : public CHeapObj<mtServiceability> {
  private:
-  ResizableResourceHT _table;
+  ResizableHT _table;
 
  public:
   JvmtiTagMapTable();

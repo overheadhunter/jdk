@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,54 +26,35 @@
 package sun.security.pkcs12;
 
 import java.io.*;
-import java.security.AccessController;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.Key;
-import java.security.KeyFactory;
-import java.security.KeyStore;
-import java.security.KeyStoreSpi;
-import java.security.KeyStoreException;
-import java.security.PKCS12Attribute;
-import java.security.PrivateKey;
-import java.security.PrivilegedAction;
-import java.security.UnrecoverableEntryException;
-import java.security.UnrecoverableKeyException;
-import java.security.SecureRandom;
-import java.security.Security;
+import java.security.*;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.cert.CertificateException;
 import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidParameterSpecException;
 import java.security.spec.KeySpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.*;
-
-import static java.nio.charset.StandardCharsets.UTF_8;
-
-import java.security.AlgorithmParameters;
-import java.security.InvalidAlgorithmParameterException;
-import javax.crypto.spec.PBEParameterSpec;
-import javax.crypto.spec.PBEKeySpec;
-import javax.crypto.spec.SecretKeySpec;
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.SecretKey;
 import javax.crypto.Cipher;
-import javax.crypto.Mac;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import javax.security.auth.DestroyFailedException;
 import javax.security.auth.x500.X500Principal;
 
 import jdk.internal.access.SharedSecrets;
-import sun.security.action.GetPropertyAction;
-import sun.security.tools.KeyStoreUtil;
-import sun.security.util.*;
 import sun.security.pkcs.ContentInfo;
-import sun.security.x509.AlgorithmId;
 import sun.security.pkcs.EncryptedPrivateKeyInfo;
 import sun.security.provider.JavaKeyStore.JKS;
+import sun.security.tools.KeyStoreUtil;
+import sun.security.util.*;
+import sun.security.x509.AlgorithmId;
 import sun.security.x509.AuthorityKeyIdentifierExtension;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 
 /**
@@ -295,9 +276,13 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
      * (e.g., the given password is wrong).
      */
     public Key engineGetKey(String alias, char[] password)
-        throws NoSuchAlgorithmException, UnrecoverableKeyException
-    {
+        throws NoSuchAlgorithmException, UnrecoverableKeyException {
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
+        return internalGetKey(entry, password);
+    }
+
+    private Key internalGetKey(Entry entry, char[] password)
+            throws NoSuchAlgorithmException, UnrecoverableKeyException {
         Key key;
 
         if (!(entry instanceof KeyEntry)) {
@@ -321,7 +306,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         try {
             // get the encrypted private key
             EncryptedPrivateKeyInfo encrInfo =
-                        new EncryptedPrivateKeyInfo(encrBytes);
+                    new EncryptedPrivateKeyInfo(encrBytes);
             encryptedKey = encrInfo.getEncryptedData();
 
             // parse Algorithm parameters
@@ -332,20 +317,20 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
         } catch (IOException ioe) {
             UnrecoverableKeyException uke =
-                new UnrecoverableKeyException("Private key not stored as "
-                                 + "PKCS#8 EncryptedPrivateKeyInfo: " + ioe);
+                    new UnrecoverableKeyException("Private key not stored as "
+                            + "PKCS#8 EncryptedPrivateKeyInfo: " + ioe);
             uke.initCause(ioe);
             throw uke;
         }
 
-       try {
+        try {
             PBEParameterSpec pbeSpec;
             int ic;
 
             if (algParams != null) {
                 try {
                     pbeSpec =
-                        algParams.getParameterSpec(PBEParameterSpec.class);
+                            algParams.getParameterSpec(PBEParameterSpec.class);
                 } catch (InvalidParameterSpecException ipse) {
                     throw new IOException("Invalid PBE algorithm parameters");
                 }
@@ -365,7 +350,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                 try {
                     cipher.init(Cipher.DECRYPT_MODE, skey, algParams);
                 } finally {
-                    destroyPBEKey(skey);
+                    KeyUtil.destroySecretKeys(skey);
                 }
                 byte[] keyInfo = cipher.doFinal(encryptedKey);
                 /*
@@ -392,7 +377,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
                             if (debug != null) {
                                 debug.println("Retrieved a protected private key at alias" +
-                                        " '" + alias + "' (" +
+                                        " '" + entry.alias + "' (" +
                                         aid.getName() +
                                         " iterations: " + ic + ")");
                             }
@@ -433,7 +418,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
                             if (debug != null) {
                                 debug.println("Retrieved a protected secret key at alias " +
-                                        "'" + alias + "' (" +
+                                        "'" + entry.alias + "' (" +
                                         aid.getName() +
                                         " iterations: " + ic + ")");
                             }
@@ -450,8 +435,8 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
         } catch (Exception e) {
             UnrecoverableKeyException uke =
-                new UnrecoverableKeyException("Get Key failed: " +
-                                        e.getMessage());
+                    new UnrecoverableKeyException("Get Key failed: " +
+                            e.getMessage());
             uke.initCause(e);
             throw uke;
         }
@@ -471,6 +456,10 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
      */
     public Certificate[] engineGetCertificateChain(String alias) {
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
+        return internalGetCertificateChain(entry);
+    }
+
+    private Certificate[] internalGetCertificateChain(Entry entry) {
         if (entry instanceof PrivateKeyEntry privateKeyEntry) {
             if (privateKeyEntry.chain == null) {
                 return null;
@@ -478,8 +467,8 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
                 if (debug != null) {
                     debug.println("Retrieved a " +
-                        privateKeyEntry.chain.length +
-                        "-certificate chain at alias '" + alias + "'");
+                            privateKeyEntry.chain.length +
+                            "-certificate chain at alias '" + entry.alias + "'");
                 }
 
                 return privateKeyEntry.chain.clone();
@@ -705,6 +694,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             // set the alias
             entry.alias = alias.toLowerCase(Locale.ENGLISH);
             // add the entry
+            populateAttributes(entry);
             entries.put(alias.toLowerCase(Locale.ENGLISH), entry);
 
         } catch (KeyStoreException kse) {
@@ -785,6 +775,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
         // add the entry
         privateKeyCount++;
+        populateAttributes(entry);
         entries.put(alias.toLowerCase(Locale.ENGLISH), entry);
     }
 
@@ -849,17 +840,6 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
     }
 
     /*
-     * Destroy the key obtained from getPBEKey().
-     */
-    private void destroyPBEKey(SecretKey key) {
-        try {
-            key.destroy();
-        } catch (DestroyFailedException e) {
-            // Accept this
-        }
-    }
-
-    /*
      * Encrypt private key or secret key using Password-based encryption (PBE)
      * as defined in PKCS#5.
      *
@@ -908,7 +888,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             try {
                 cipher.init(Cipher.ENCRYPT_MODE, skey, algParams);
             } finally {
-                destroyPBEKey(skey);
+                KeyUtil.destroySecretKeys(skey);
             }
             byte[] encryptedKey = cipher.doFinal(data);
             algid = new AlgorithmId(pbeOID, cipher.getParameters());
@@ -988,6 +968,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             new CertEntry((X509Certificate) cert, null, alias, AnyUsage,
                 attributes);
         certificateCount++;
+        populateAttributes(certEntry);
         entries.put(alias.toLowerCase(Locale.ENGLISH), certEntry);
 
         if (debug != null) {
@@ -1010,18 +991,19 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             debug.println("Removing entry at alias '" + alias + "'");
         }
 
-        Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
-        if (entry instanceof PrivateKeyEntry keyEntry) {
-            if (keyEntry.chain != null) {
-                certificateCount -= keyEntry.chain.length;
+        Entry entry = entries.remove(alias.toLowerCase(Locale.ENGLISH));
+        if (entry != null) {
+            if (entry instanceof PrivateKeyEntry keyEntry) {
+                if (keyEntry.chain != null) {
+                    certificateCount -= keyEntry.chain.length;
+                }
+                privateKeyCount--;
+            } else if (entry instanceof CertEntry) {
+                certificateCount--;
+            } else if (entry instanceof SecretKeyEntry) {
+                secretKeyCount--;
             }
-            privateKeyCount--;
-        } else if (entry instanceof CertEntry) {
-            certificateCount--;
-        } else if (entry instanceof SecretKeyEntry) {
-            secretKeyCount--;
         }
-        entries.remove(alias.toLowerCase(Locale.ENGLISH));
     }
 
     /**
@@ -1062,6 +1044,10 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
      */
     public boolean engineIsKeyEntry(String alias) {
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
+        return internalIsKeyEntry(entry);
+    }
+
+    private boolean internalIsKeyEntry(Entry entry) {
         return entry instanceof KeyEntry;
     }
 
@@ -1072,8 +1058,13 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
      * @return true if the entry identified by the given alias is a
      * <i>trusted certificate entry</i>, false otherwise.
      */
+
     public boolean engineIsCertificateEntry(String alias) {
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
+        return internalIsCertificateEntry(entry);
+    }
+
+    private boolean internalIsCertificateEntry(Entry entry) {
         return entry instanceof CertEntry certEntry &&
                 certEntry.trustedKeyUsage != null;
     }
@@ -1247,7 +1238,8 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             macIterationCount = defaultMacIterationCount();
         }
         if (password != null && !macAlgorithm.equalsIgnoreCase("NONE")) {
-            byte[] macData = calculateMac(password, authenticatedSafe);
+            byte[] macData = MacData.generateMac(password, authenticatedSafe,
+                    macAlgorithm, macIterationCount, getSalt());
             pfx.write(macData);
         }
         // write PFX to output stream
@@ -1264,7 +1256,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             return super.engineGetAttributes(alias);
         }
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
-        return Collections.unmodifiableSet(new HashSet<>(getAttributes(entry)));
+        return Collections.unmodifiableSet(new HashSet<>(entry.attributes));
     }
 
     /**
@@ -1303,18 +1295,14 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
 
         Entry entry = entries.get(alias.toLowerCase(Locale.ENGLISH));
         if (protParam == null) {
-            if (engineIsCertificateEntry(alias)) {
-                if (entry instanceof CertEntry &&
-                    ((CertEntry) entry).trustedKeyUsage != null) {
-
-                    if (debug != null) {
-                        debug.println("Retrieved a trusted certificate at " +
+            if (internalIsCertificateEntry(entry)) {
+                if (debug != null) {
+                    debug.println("Retrieved a trusted certificate at " +
                             "alias '" + alias + "'");
-                    }
-
-                    return new KeyStore.TrustedCertificateEntry(
-                        ((CertEntry)entry).cert, getAttributes(entry));
                 }
+
+                return new KeyStore.TrustedCertificateEntry(
+                        ((CertEntry)entry).cert, entry.attributes);
             } else {
                 throw new UnrecoverableKeyException
                         ("requested entry requires a password");
@@ -1322,27 +1310,27 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         }
 
         if (protParam instanceof KeyStore.PasswordProtection) {
-            if (engineIsCertificateEntry(alias)) {
+            if (internalIsCertificateEntry(entry)) {
                 throw new UnsupportedOperationException
                     ("trusted certificate entries are not password-protected");
-            } else if (engineIsKeyEntry(alias)) {
+            } else if (internalIsKeyEntry(entry)) {
                 KeyStore.PasswordProtection pp =
                         (KeyStore.PasswordProtection)protParam;
                 char[] password = pp.getPassword();
 
-                Key key = engineGetKey(alias, password);
+                Key key = internalGetKey(entry, password);
                 if (key instanceof PrivateKey) {
-                    Certificate[] chain = engineGetCertificateChain(alias);
+                    Certificate[] chain = internalGetCertificateChain(entry);
 
                     return new KeyStore.PrivateKeyEntry((PrivateKey)key, chain,
-                        getAttributes(entry));
+                        entry.attributes);
 
                 } else if (key instanceof SecretKey) {
 
                     return new KeyStore.SecretKeyEntry((SecretKey)key,
-                        getAttributes(entry));
+                        entry.attributes);
                 }
-            } else if (!engineIsKeyEntry(alias)) {
+            } else {
                 throw new UnsupportedOperationException
                     ("untrusted certificate entries are not " +
                         "password-protected");
@@ -1429,9 +1417,9 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
     }
 
     /*
-     * Assemble the entry attributes
+     * Populate the entry with additional attributes used by the implementation.
      */
-    private Set<KeyStore.Entry.Attribute> getAttributes(Entry entry) {
+    private void populateAttributes(Entry entry) {
 
         if (entry.attributes == null) {
             entry.attributes = new HashSet<>();
@@ -1464,51 +1452,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                 }
             }
         }
-
-        return entry.attributes;
     }
-
-    /*
-     * Calculate MAC using HMAC algorithm (required for password integrity)
-     *
-     * Hash-based MAC algorithm combines secret key with message digest to
-     * create a message authentication code (MAC)
-     */
-    private byte[] calculateMac(char[] passwd, byte[] data)
-        throws IOException
-    {
-        byte[] mData;
-        String algName = macAlgorithm.substring(7);
-
-        try {
-            // Generate a random salt.
-            byte[] salt = getSalt();
-
-            // generate MAC (MAC key is generated within JCE)
-            Mac m = Mac.getInstance(macAlgorithm);
-            PBEParameterSpec params =
-                        new PBEParameterSpec(salt, macIterationCount);
-            SecretKey key = getPBEKey(passwd);
-            try {
-                m.init(key, params);
-            } finally {
-                destroyPBEKey(key);
-            }
-            m.update(data);
-            byte[] macResult = m.doFinal();
-
-            // encode as MacData
-            MacData macData = new MacData(algName, macResult, salt,
-                    macIterationCount);
-            DerOutputStream bytes = new DerOutputStream();
-            bytes.write(macData.getEncoded());
-            mData = bytes.toByteArray();
-        } catch (Exception e) {
-            throw new IOException("calculateMac failed: " + e, e);
-        }
-        return mData;
-    }
-
 
     /*
      * Validate Certificate Chain
@@ -1878,7 +1822,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
             try {
                 cipher.init(Cipher.ENCRYPT_MODE, skey, algParams);
             } finally {
-                destroyPBEKey(skey);
+                KeyUtil.destroySecretKeys(skey);
             }
             encryptedData = cipher.doFinal(data);
 
@@ -2088,7 +2032,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                         try {
                             cipher.init(Cipher.DECRYPT_MODE, skey, algParams);
                         } finally {
-                            destroyPBEKey(skey);
+                            KeyUtil.destroySecretKeys(skey);
                         }
                         loadSafeContents(new DerInputStream(cipher.doFinal(rawData)));
                         return null;
@@ -2123,39 +2067,11 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                                 "MAC iteration count too large: " + ic);
                     }
 
-                    String algName =
-                            macData.getDigestAlgName().toUpperCase(Locale.ENGLISH);
-
-                    // Change SHA-1 to SHA1
-                    algName = algName.replace("-", "");
-
-                    macAlgorithm = "HmacPBE" + algName;
+                    // Store MAC algorithm of keystore that was just loaded.
+                    macAlgorithm = macData.getMacAlgorithm();
                     macIterationCount = ic;
-
-                    // generate MAC (MAC key is created within JCE)
-                    Mac m = Mac.getInstance(macAlgorithm);
-                    PBEParameterSpec params =
-                            new PBEParameterSpec(macData.getSalt(), ic);
-
                     RetryWithZero.run(pass -> {
-                        SecretKey key = getPBEKey(pass);
-                        try {
-                            m.init(key, params);
-                        } finally {
-                            destroyPBEKey(key);
-                        }
-                        m.update(authSafeData);
-                        byte[] macResult = m.doFinal();
-
-                        if (debug != null) {
-                            debug.println("Checking keystore integrity " +
-                                    "(" + m.getAlgorithm() + " iterations: " + ic + ")");
-                        }
-
-                        if (!MessageDigest.isEqual(macData.getDigest(), macResult)) {
-                            throw new UnrecoverableKeyException("Failed PKCS12" +
-                                    " integrity checking");
-                        }
+                        macData.verifyMac(pass, authSafeData);
                         return (Void) null;
                     }, password);
                 } catch (Exception e) {
@@ -2522,6 +2438,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                    alias = getUnfriendlyName();
                 }
                 entry.alias = alias;
+                populateAttributes(entry);
                 entries.put(alias.toLowerCase(Locale.ENGLISH), entry);
 
             } else if (bagItem instanceof X509Certificate cert) {
@@ -2543,6 +2460,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
                     CertEntry certEntry =
                         new CertEntry(cert, keyId, alias, trustedKeyUsage,
                             attributes);
+                    populateAttributes(certEntry);
                     entries.put(alias.toLowerCase(Locale.ENGLISH), certEntry);
                 } else {
                     certEntries.add(new CertEntry(cert, keyId, alias));
@@ -2634,15 +2552,14 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
     // key entries.
 
     private static boolean useLegacy() {
-        return GetPropertyAction.privilegedGetProperty(
-                USE_LEGACY_PROP) != null;
+        return System.getProperty(USE_LEGACY_PROP) != null;
     }
 
     private static String defaultCertProtectionAlgorithm() {
         if (useLegacy()) {
             return LEGACY_CERT_PBE_ALGORITHM;
         }
-        String result = SecurityProperties.privilegedGetOverridable(
+        String result = SecurityProperties.getOverridableProperty(
                 "keystore.pkcs12.certProtectionAlgorithm");
         return (result != null && !result.isEmpty())
                 ? result : DEFAULT_CERT_PBE_ALGORITHM;
@@ -2652,7 +2569,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         if (useLegacy()) {
             return LEGACY_PBE_ITERATION_COUNT;
         }
-        String result = SecurityProperties.privilegedGetOverridable(
+        String result = SecurityProperties.getOverridableProperty(
                 "keystore.pkcs12.certPbeIterationCount");
         return (result != null && !result.isEmpty())
                 ? string2IC("certPbeIterationCount", result)
@@ -2665,27 +2582,18 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         if (useLegacy()) {
             return LEGACY_KEY_PBE_ALGORITHM;
         }
-        @SuppressWarnings("removal")
-        String result = AccessController.doPrivileged(new PrivilegedAction<String>() {
-            public String run() {
-                String result;
-                String name1 = "keystore.pkcs12.keyProtectionAlgorithm";
-                String name2 = "keystore.PKCS12.keyProtectionAlgorithm";
-                result = System.getProperty(name1);
-                if (result != null) {
-                    return result;
-                }
-                result = System.getProperty(name2);
-                if (result != null) {
-                    return result;
-                }
+        String name1 = "keystore.pkcs12.keyProtectionAlgorithm";
+        String name2 = "keystore.PKCS12.keyProtectionAlgorithm";
+        String result = System.getProperty(name1);
+        if (result == null) {
+            result = System.getProperty(name2);
+            if (result == null) {
                 result = Security.getProperty(name1);
-                if (result != null) {
-                    return result;
+                if (result == null) {
+                    result = Security.getProperty(name2);
                 }
-                return Security.getProperty(name2);
             }
-        });
+        }
         return (result != null && !result.isEmpty())
                 ? result : DEFAULT_KEY_PBE_ALGORITHM;
     }
@@ -2694,7 +2602,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         if (useLegacy()) {
             return LEGACY_PBE_ITERATION_COUNT;
         }
-        String result = SecurityProperties.privilegedGetOverridable(
+        String result = SecurityProperties.getOverridableProperty(
                 "keystore.pkcs12.keyPbeIterationCount");
         return (result != null && !result.isEmpty())
                 ? string2IC("keyPbeIterationCount", result)
@@ -2705,7 +2613,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         if (useLegacy()) {
             return LEGACY_MAC_ALGORITHM;
         }
-        String result = SecurityProperties.privilegedGetOverridable(
+        String result = SecurityProperties.getOverridableProperty(
                 "keystore.pkcs12.macAlgorithm");
         return (result != null && !result.isEmpty())
                 ? result : DEFAULT_MAC_ALGORITHM;
@@ -2715,7 +2623,7 @@ public final class PKCS12KeyStore extends KeyStoreSpi {
         if (useLegacy()) {
             return LEGACY_MAC_ITERATION_COUNT;
         }
-        String result = SecurityProperties.privilegedGetOverridable(
+        String result = SecurityProperties.getOverridableProperty(
                 "keystore.pkcs12.macIterationCount");
         return (result != null && !result.isEmpty())
                 ? string2IC("macIterationCount", result)

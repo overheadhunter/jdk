@@ -1,7 +1,7 @@
 /*
- * Copyright (c) 2001, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2025, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2015, 2019, Red Hat Inc.
- * Copyright (c) 2021, 2022, Huawei Technologies Co., Ltd. All rights reserved.
+ * Copyright (c) 2021, 2023, Huawei Technologies Co., Ltd. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -71,7 +71,7 @@ public class RISCV64Frame extends Frame {
   // Native frames
   private static final int NATIVE_FRAME_INITIAL_PARAM_OFFSET =  2;
 
-  private static VMReg fp = new VMReg(8);
+  private static VMReg fp = new VMReg(8 << 1);
 
   static {
     VM.registerVMInitializedObserver(new Observer() {
@@ -101,30 +101,11 @@ public class RISCV64Frame extends Frame {
   private RISCV64Frame() {
   }
 
-  private void adjustForDeopt() {
-    if ( pc != null) {
-      // Look for a deopt pc and if it is deopted convert to original pc
-      CodeBlob cb = VM.getVM().getCodeCache().findBlob(pc);
-      if (cb != null && cb.isJavaMethod()) {
-        NMethod nm = (NMethod) cb;
-        if (pc.equals(nm.deoptHandlerBegin())) {
-          if (Assert.ASSERTS_ENABLED) {
-            Assert.that(this.getUnextendedSP() != null, "null SP in Java frame");
-          }
-          // adjust pc if frame is deoptimized.
-          pc = this.getUnextendedSP().getAddressAt(nm.origPCOffset());
-          deoptimized = true;
-        }
-      }
-    }
-  }
-
   public RISCV64Frame(Address raw_sp, Address raw_fp, Address pc) {
     this.raw_sp = raw_sp;
     this.raw_unextendedSP = raw_sp;
     this.raw_fp = raw_fp;
     this.pc = pc;
-    adjustUnextendedSP();
 
     // Frame must be fully constructed before this call
     adjustForDeopt();
@@ -148,8 +129,6 @@ public class RISCV64Frame extends Frame {
       this.pc = savedPC;
     }
 
-    adjustUnextendedSP();
-
     // Frame must be fully constructed before this call
     adjustForDeopt();
 
@@ -164,7 +143,6 @@ public class RISCV64Frame extends Frame {
     this.raw_unextendedSP = raw_unextendedSp;
     this.raw_fp = raw_fp;
     this.pc = pc;
-    adjustUnextendedSP();
 
     // Frame must be fully constructed before this call
     adjustForDeopt();
@@ -284,7 +262,13 @@ public class RISCV64Frame extends Frame {
     }
 
     if (cb != null) {
-      return senderForCompiledFrame(map, cb);
+      if (cb.isUpcallStub()) {
+        return senderForUpcallStub(map, (UpcallStub)cb);
+      } else if (cb.isContinuationStub()) {
+        return senderForContinuationStub(map, cb);
+      } else {
+        return senderForCompiledFrame(map, cb);
+      }
     }
 
     // Must be native-compiled frame, i.e. the marshaling code for native
@@ -319,29 +303,32 @@ public class RISCV64Frame extends Frame {
     return fr;
   }
 
-  //------------------------------------------------------------------------------
-  // frame::adjust_unextended_sp
-  private void adjustUnextendedSP() {
-    // If we are returning to a compiled MethodHandle call site, the
-    // saved_fp will in fact be a saved value of the unextended SP.  The
-    // simplest way to tell whether we are returning to such a call site
-    // is as follows:
-
-    CodeBlob cb = cb();
-    NMethod senderNm = (cb == null) ? null : cb.asNMethodOrNull();
-    if (senderNm != null) {
-      // If the sender PC is a deoptimization point, get the original
-      // PC.  For MethodHandle call site the unextended_sp is stored in
-      // saved_fp.
-      if (senderNm.isDeoptMhEntry(getPC())) {
-        raw_unextendedSP = getFP();
-      }
-      else if (senderNm.isDeoptEntry(getPC())) {
-      }
-      else if (senderNm.isMethodHandleReturn(getPC())) {
-        raw_unextendedSP = getFP();
-      }
+  private Frame senderForUpcallStub(RISCV64RegisterMap map, UpcallStub stub) {
+    if (DEBUG) {
+      System.out.println("senderForUpcallStub");
     }
+    if (Assert.ASSERTS_ENABLED) {
+      Assert.that(map != null, "map must be set");
+    }
+
+    var lastJavaFP = stub.getLastJavaFP(this);
+    var lastJavaSP = stub.getLastJavaSP(this);
+    var lastJavaPC = stub.getLastJavaPC(this);
+
+    if (Assert.ASSERTS_ENABLED) {
+      Assert.that(lastJavaSP.greaterThan(getSP()), "must be above this frame on stack");
+    }
+    RISCV64Frame fr;
+    if (lastJavaPC != null) {
+      fr = new RISCV64Frame(lastJavaSP, lastJavaFP, lastJavaPC);
+    } else {
+      fr = new RISCV64Frame(lastJavaSP, lastJavaFP);
+    }
+    map.clear();
+    if (Assert.ASSERTS_ENABLED) {
+      Assert.that(map.getIncludeArgumentOops(), "should be set by clear");
+    }
+    return fr;
   }
 
   private Frame senderForInterpreterFrame(RISCV64RegisterMap map) {
@@ -365,6 +352,16 @@ public class RISCV64Frame extends Frame {
 
   private void updateMapWithSavedLink(RegisterMap map, Address savedFPAddr) {
     map.setLocation(fp, savedFPAddr);
+  }
+
+  private Frame senderForContinuationStub(RISCV64RegisterMap map, CodeBlob cb) {
+    var contEntry = map.getThread().getContEntry();
+
+    Address senderSP = contEntry.getEntrySP();
+    Address senderPC = contEntry.getEntryPC();
+    Address senderFP = contEntry.getEntryFP();
+
+    return new RISCV64Frame(senderSP, senderFP, senderPC);
   }
 
   private Frame senderForCompiledFrame(RISCV64RegisterMap map, CodeBlob cb) {
@@ -503,7 +500,8 @@ public class RISCV64Frame extends Frame {
   }
 
   public BasicObjectLock interpreterFrameMonitorEnd() {
-    Address result = addressOfStackSlot(INTERPRETER_FRAME_MONITOR_BLOCK_TOP_OFFSET).getAddressAt(0);
+    long n = addressOfStackSlot(INTERPRETER_FRAME_MONITOR_BLOCK_TOP_OFFSET).getCIntegerAt(0, VM.getVM().getAddressSize(), false);
+    Address result = getFP().addOffsetTo(n * VM.getVM().getAddressSize());
     if (Assert.ASSERTS_ENABLED) {
       // make sure the pointer points inside the frame
       Assert.that(AddressOps.gt(getFP(), result), "result must <  than frame pointer");

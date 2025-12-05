@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2024, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -71,11 +71,17 @@ void FreezeBase::adjust_interpreted_frame_unextended_sp(frame& f) {
   // nothing to do
 }
 
-static inline void relativize_one(intptr_t* const vfp, intptr_t* const hfp, int offset) {
-  assert(*(hfp + offset) == *(vfp + offset), "");
-  intptr_t* addr = hfp + offset;
-  intptr_t value = *(intptr_t**)addr - vfp;
-  *addr = value;
+inline void FreezeBase::prepare_freeze_interpreted_top_frame(frame& f) {
+  // Nothing to do. We don't save a last sp since we cannot use sp as esp.
+  // Instead the top frame is trimmed when making an i2i call. The original
+  // top_frame_sp is set when the frame is pushed (see generate_fixed_frame()).
+  // An interpreter top frame that was just thawed is resized to top_frame_sp by the
+  // resume adapter (see generate_cont_resume_interpreter_adapter()). So the assertion is
+  // false, if we freeze again right after thawing as we do when redoing a vm call wasn't
+  // successful.
+  assert(_thread->interp_redoing_vm_call() ||
+         ((intptr_t*)f.at_relative(ijava_idx(top_frame_sp)) == f.unextended_sp()),
+         "top_frame_sp:" PTR_FORMAT " usp:" PTR_FORMAT, f.at_relative(ijava_idx(top_frame_sp)), p2i(f.unextended_sp()));
 }
 
 inline void FreezeBase::relativize_interpreted_frame_metadata(const frame& f, const frame& hf) {
@@ -87,9 +93,13 @@ inline void FreezeBase::relativize_interpreted_frame_metadata(const frame& f, co
   // frame, because we freeze the padding (see recurse_freeze_interpreted_frame)
   // in order to keep the same relativized locals pointer, we don't need to change it here.
 
-  relativize_one(vfp, hfp, ijava_idx(monitors));
-  relativize_one(vfp, hfp, ijava_idx(esp));
-  relativize_one(vfp, hfp, ijava_idx(top_frame_sp));
+  // Make sure that monitors is already relativized.
+  assert(hf.at_absolute(ijava_idx(monitors)) <= -(frame::ijava_state_size / wordSize), "");
+
+  // Make sure that esp is already relativized.
+  assert(hf.at_absolute(ijava_idx(esp)) <= hf.at_absolute(ijava_idx(monitors)), "");
+
+  // top_frame_sp is already relativized
 
   // hfp == hf.sp() + (f.fp() - f.sp()) is not true on ppc because the stack frame has room for
   // the maximal expression stack and the expression stack in the heap frame is trimmed.
@@ -331,6 +341,18 @@ inline void FreezeBase::patch_pd(frame& hf, const frame& caller) {
 #endif
 }
 
+inline void FreezeBase::patch_pd_unused(intptr_t* sp) {
+}
+
+inline intptr_t* AnchorMark::anchor_mark_set_pd() {
+  // Nothing to do on PPC because the interpreter does not use SP as expression stack pointer.
+  // Instead there is a dedicated register R15_esp which is not affected by VM calls.
+  return _top_frame.sp();
+}
+
+inline void AnchorMark::anchor_mark_clear_pd() {
+}
+
 //////// Thaw
 
 // Fast path
@@ -353,7 +375,8 @@ inline void Thaw<ConfigT>::patch_caller_links(intptr_t* sp, intptr_t* bottom) {
     if (is_entry_frame) {
       callers_sp = _cont.entryFP();
     } else {
-      CodeBlob* cb = CodeCache::find_blob(pc);
+      assert(!Interpreter::contains(pc), "sp:" PTR_FORMAT " pc:" PTR_FORMAT, p2i(sp), p2i(pc));
+      CodeBlob* cb = CodeCache::find_blob_fast(pc);
       callers_sp = sp + cb->frame_size();
     }
     // set the back link
@@ -483,8 +506,8 @@ inline frame ThawBase::new_entry_frame() {
 template<typename FKind> frame ThawBase::new_stack_frame(const frame& hf, frame& caller, bool bottom) {
   assert(FKind::is_instance(hf), "");
 
-  assert(is_aligned(caller.fp(), frame::frame_alignment), "");
-  assert(is_aligned(caller.sp(), frame::frame_alignment), "");
+  assert(is_aligned(caller.fp(), frame::frame_alignment), PTR_FORMAT, p2i(caller.fp()));
+  // caller.sp() can be unaligned. This is fixed below.
   if (FKind::interpreted) {
     // Note: we have to overlap with the caller, at least if it is interpreted, to match the
     // max_thawing_size calculation during freeze. See also comment above.
@@ -513,7 +536,7 @@ template<typename FKind> frame ThawBase::new_stack_frame(const frame& hf, frame&
     return f;
   } else {
     int fsize = FKind::size(hf);
-    int argsize = hf.compiled_frame_stack_argsize();
+    int argsize = FKind::stack_argsize(hf);
     intptr_t* frame_sp = caller.sp() - fsize;
 
     if ((bottom && argsize > 0) || caller.is_interpreted_frame()) {
@@ -534,23 +557,52 @@ inline intptr_t* ThawBase::align(const frame& hf, intptr_t* frame_sp, frame& cal
   return nullptr;
 }
 
-static inline void derelativize_one(intptr_t* const fp, int offset) {
-  intptr_t* addr = fp + offset;
-  *addr = (intptr_t)(fp + *addr);
-}
-
 inline void ThawBase::derelativize_interpreted_frame_metadata(const frame& hf, const frame& f) {
   intptr_t* vfp = f.fp();
 
-  derelativize_one(vfp, ijava_idx(monitors));
-  derelativize_one(vfp, ijava_idx(esp));
-  derelativize_one(vfp, ijava_idx(top_frame_sp));
+  // Make sure that monitors is still relativized.
+  assert(f.at_absolute(ijava_idx(monitors)) <= -(frame::ijava_state_size / wordSize), "");
+
+  // Make sure that esp is still relativized.
+  assert(f.at_absolute(ijava_idx(esp)) <= f.at_absolute(ijava_idx(monitors)), "");
+
+  // Keep top_frame_sp relativized.
+}
+
+inline intptr_t* ThawBase::push_cleanup_continuation() {
+  frame enterSpecial = new_entry_frame();
+  frame::common_abi* enterSpecial_abi = (frame::common_abi*)enterSpecial.sp();
+
+  enterSpecial_abi->lr = (intptr_t)ContinuationEntry::cleanup_pc();
+
+  log_develop_trace(continuations, preempt)("push_cleanup_continuation enterSpecial sp: " INTPTR_FORMAT " cleanup pc: " INTPTR_FORMAT,
+                                            p2i(enterSpecial_abi),
+                                            p2i(ContinuationEntry::cleanup_pc()));
+
+  return enterSpecial.sp();
+}
+
+inline intptr_t* ThawBase::push_preempt_adapter() {
+  frame enterSpecial = new_entry_frame();
+  frame::common_abi* enterSpecial_abi = (frame::common_abi*)enterSpecial.sp();
+
+  enterSpecial_abi->lr = (intptr_t)StubRoutines::cont_preempt_stub();
+
+  log_develop_trace(continuations, preempt)("push_preempt_adapter enterSpecial sp: " INTPTR_FORMAT " adapter pc: " INTPTR_FORMAT,
+                                            p2i(enterSpecial_abi),
+                                            p2i(StubRoutines::cont_preempt_stub()));
+
+  return enterSpecial.sp();
 }
 
 inline void ThawBase::patch_pd(frame& f, const frame& caller) {
   patch_callee_link(caller, caller.fp());
   // Prevent assertion if f gets deoptimized right away before it's fully initialized
   f.mark_not_fully_initialized();
+}
+
+inline void ThawBase::patch_pd(frame& f, intptr_t* caller_sp) {
+  assert(f.own_abi()->callers_sp == (uint64_t)caller_sp, "should have been fixed by patch_caller_links");
 }
 
 //

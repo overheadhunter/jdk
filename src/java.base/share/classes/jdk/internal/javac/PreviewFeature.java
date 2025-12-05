@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -64,18 +64,37 @@ public @interface PreviewFeature {
      * Values should be annotated with the feature's {@code JEP}.
      */
     public enum Feature {
-        // not used
-        VIRTUAL_THREADS,
-        @JEP(number=442, title="Foreign Function & Memory API", status="Third Preview")
-        FOREIGN,
-        @JEP(number=430, title="String Templates", status="First Preview")
-        STRING_TEMPLATES,
-        @JEP(number=443, title="Unnamed Patterns and Variables")
-        UNNAMED,
+        // The JDK build process involves creating an interim javac which is then
+        // used to compile the rest of the JDK. The jdk.internal.javac.PreviewFeature
+        // annotation from the current sources is used when compiling interim javac.
+        // That's because the javac APIs of the current sources may be annotated with
+        // this annotation and they may be using the enum constants of the current sources.
+        // Furthermore, when compiling interim javac, the class files from the bootstrap JDK get
+        // used and those may also contain the PreviewFeature annotation. However, they may be
+        // using the enum constants of the bootstrap JDK's PreviewFeature annotation.
+        // If javac sees an annotation with an unknown enum constant, it produces a warning,
+        // and that in turn fails the build.
+        // So, in the current sources, we need to preserve the PreviewFeature enum constants
+        // for as long as the interim javac build needs it. As a result, we retain PreviewFeature
+        // enum constants for preview features that are present in the bootstrap JDK.
+        // Older constants can be removed.
+        //
+        // For example, Class-File API became final in JDK 24. As soon as JDK 23 was dropped as
+        // the bootstrap JDK, the CLASSFILE_API enum constant became eligible for removal.
+
+        //---
+        @JEP(number=525, title="Structured Concurrency", status="Sixth Preview")
+        STRUCTURED_CONCURRENCY,
+        @JEP(number = 526, title = "Lazy Constants", status = "Second Preview")
+        LAZY_CONSTANTS,
+        @JEP(number=524, title="PEM Encodings of Cryptographic Objects",
+            status="Second Preview")
+        PEM_API,
+        LANGUAGE_MODEL,
         /**
          * A key for testing.
          */
-        @JEP(number=0, title="Test Feature")
+        @JEP(number=2_147_483_647, title="Test Feature")
         TEST,
         ;
     }

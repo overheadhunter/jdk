@@ -39,25 +39,23 @@ public:
   //  3 - restoring an old state (javaCalls)
 
   void clear(void) {
+    // No hardware barriers are necessary. All members are volatile and the profiler
+    // is run from a signal handler and the only observer is the thread its running on.
+
     // clearing _last_Java_sp must be first
     _last_Java_sp = nullptr;
-    OrderAccess::release();
     _last_Java_fp = nullptr;
     _last_Java_pc = nullptr;
   }
 
   void copy(JavaFrameAnchor* src) {
-    // In order to make sure the transition state is valid for "this"
+    // No hardware barriers are necessary. All members are volatile and the profiler
+    // is run from a signal handler and the only observer is the thread its running on.
+
     // We must clear _last_Java_sp before copying the rest of the new data
-    //
-    // Hack Alert: Temporary bugfix for 4717480/4721647
-    // To act like previous version (pd_cache_state) don't null _last_Java_sp
-    // unless the value is changing
-    //
     assert(src != nullptr, "Src should not be null.");
     if (_last_Java_sp != src->_last_Java_sp) {
       _last_Java_sp = nullptr;
-      OrderAccess::release();
     }
     _last_Java_fp = src->_last_Java_fp;
     _last_Java_pc = src->_last_Java_pc;
@@ -71,7 +69,7 @@ public:
 
   intptr_t* last_Java_sp(void) const             { return _last_Java_sp; }
 
-  const address last_Java_pc(void)               { return _last_Java_pc; }
+  address last_Java_pc(void)                     { return _last_Java_pc; }
 
 private:
 

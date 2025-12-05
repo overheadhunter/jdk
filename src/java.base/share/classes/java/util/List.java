@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,11 @@
 
 package java.util;
 
+import jdk.internal.foreign.Utils;
+import jdk.internal.javac.PreviewFeature;
+
+import java.io.Serializable;
+import java.util.function.IntFunction;
 import java.util.function.UnaryOperator;
 
 /**
@@ -87,9 +92,9 @@ import java.util.function.UnaryOperator;
  * interface.
  *
  * <h2><a id="unmodifiable">Unmodifiable Lists</a></h2>
- * <p>The {@link List#of(Object...) List.of} and
- * {@link List#copyOf List.copyOf} static factory methods
- * provide a convenient way to create unmodifiable lists. The {@code List}
+ * <p>The {@link List#of(Object...) List.of},
+ * {@link List#copyOf List.copyOf}, and {@link List#ofLazy(int, IntFunction)} static
+ * factory methods provide a convenient way to create unmodifiable lists. The {@code List}
  * instances created by these methods have the following characteristics:
  *
  * <ul>
@@ -100,7 +105,7 @@ import java.util.function.UnaryOperator;
  * this may cause the List's contents to appear to change.
  * <li>They disallow {@code null} elements. Attempts to create them with
  * {@code null} elements result in {@code NullPointerException}.
- * <li>They are serializable if all elements are serializable.
+ * <li>Unless otherwise specified, they are serializable if all elements are serializable.
  * <li>The order of elements in the list is the same as the order of the
  * provided arguments, or of the elements in the provided array.
  * <li>The lists and their {@link #subList(int, int) subList} views implement the
@@ -409,8 +414,8 @@ public interface List<E> extends SequencedCollection<E> {
 
     /**
      * Replaces each element of this list with the result of applying the
-     * operator to that element.  Errors or runtime exceptions thrown by
-     * the operator are relayed to the caller.
+     * operator to that element (optional operation).  Errors or runtime
+     * exceptions thrown by the operator are relayed to the caller.
      *
      * @implSpec
      * The default implementation is equivalent to, for this {@code list}:
@@ -426,10 +431,8 @@ public interface List<E> extends SequencedCollection<E> {
      * replacing the first element.
      *
      * @param operator the operator to apply to each element
-     * @throws UnsupportedOperationException if this list is unmodifiable.
-     *         Implementations may throw this exception if an element
-     *         cannot be replaced or if, in general, modification is not
-     *         supported
+     * @throws UnsupportedOperationException if the {@code replaceAll} operation
+     *         is not supported by this list
      * @throws NullPointerException if the specified operator is null or
      *         if the operator result is a null value and this list does
      *         not permit null elements
@@ -446,8 +449,8 @@ public interface List<E> extends SequencedCollection<E> {
 
     /**
      * Sorts this list according to the order induced by the specified
-     * {@link Comparator}.  The sort is <i>stable</i>: this method must not
-     * reorder equal elements.
+     * {@link Comparator} (optional operation).  The sort is <i>stable</i>:
+     * this method must not reorder equal elements.
      *
      * <p>All elements in this list must be <i>mutually comparable</i> using the
      * specified comparator (that is, {@code c.compare(e1, e2)} must not throw
@@ -495,15 +498,15 @@ public interface List<E> extends SequencedCollection<E> {
      *          {@linkplain Comparable natural ordering} should be used
      * @throws ClassCastException if the list contains elements that are not
      *         <i>mutually comparable</i> using the specified comparator
-     * @throws UnsupportedOperationException if the list's list-iterator does
-     *         not support the {@code set} operation
+     * @throws UnsupportedOperationException if the {@code sort} operation
+     *         is not supported by this list
      * @throws IllegalArgumentException
      *         (<a href="Collection.html#optional-restrictions">optional</a>)
      *         if the comparator is found to violate the {@link Comparator}
      *         contract
      * @since 1.8
      */
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings("unchecked")
     default void sort(Comparator<? super E> c) {
         Object[] a = this.toArray();
         Arrays.sort(a, (Comparator) c);
@@ -888,8 +891,14 @@ public interface List<E> extends SequencedCollection<E> {
      * {@inheritDoc}
      *
      * @implSpec
-     * The implementation in this interface returns an instance of a reverse-ordered
-     * List that delegates its operations to this List.
+     * The implementation in this interface returns a reverse-ordered List
+     * view. The {@code reversed()} method of the view returns a reference
+     * to this List. Other operations on the view are implemented via calls to
+     * public methods on this List. The exact relationship between calls on the
+     * view and calls on this List is unspecified. However, order-sensitive
+     * operations generally behave as if they delegate to the appropriate method
+     * with the opposite orientation. For example, calling {@code getFirst} on
+     * the view might result in a call to {@code getLast} on this List.
      *
      * @return a reverse-ordered view of this collection, as a {@code List}
      * @since 21
@@ -1186,4 +1195,71 @@ public interface List<E> extends SequencedCollection<E> {
     static <E> List<E> copyOf(Collection<? extends E> coll) {
         return ImmutableCollections.listCopy(coll);
     }
+
+    /**
+     * {@return a new lazily computed list of the provided {@code size}}
+     * <p>
+     * The returned list is an {@linkplain Collection##unmodifiable unmodifiable} list
+     * with the provided {@code size}. The list's elements are lazily computed via the
+     * provided {@code computingFunction} when they are first accessed
+     * (e.g., via {@linkplain List#get(int) List::get}).
+     * <p>
+     * The provided computing function is guaranteed to be successfully
+     * invoked at most once per list index, even in a multi-threaded environment.
+     * Competing threads accessing an element already under computation will block until
+     * an element is computed or the computing function completes abnormally.
+     * <p>
+     * If invoking the provided computing function throws an exception, it is rethrown
+     * to the initial caller and no value for the element is recorded.
+     * <p>
+     * If the provided computing function returns {@code null},
+     * a {@linkplain NullPointerException} will be thrown. Hence, just like other
+     * unmodifiable lists created via the {@code List::of} factories, a lazy list
+     * cannot contain {@code null} elements. Clients that want to use nullable elements
+     * can wrap elements into an {@linkplain Optional} holder.
+     * <p>
+     * The elements of any {@link List#subList(int, int) subList()} or
+     * {@link List#reversed()} views of the returned list are also lazily computed.
+     * <p>
+     * The returned list and its {@link List#subList(int, int) subList()} or
+     * {@link List#reversed()} views implement the {@link RandomAccess} interface.
+     * <p>
+     * If the provided computing function recursively calls itself or the returned
+     * lazy list for the same index, an {@linkplain IllegalStateException}
+     * will be thrown.
+     * <p>
+     * The returned list's {@linkplain Object Object methods};
+     * {@linkplain Object#equals(Object) equals()},
+     * {@linkplain Object#hashCode() hashCode()}, and
+     * {@linkplain Object#toString() toString()} methods may trigger initialization of
+     * one or more lazy elements.
+     * <p>
+     * The returned lazy list strongly references its computing
+     * function used to compute elements at least as long as there are uninitialized
+     * elements.
+     * <p>
+     * The returned List is <em>not</em> {@linkplain Serializable}.
+     *
+     * @implNote  after all elements have been initialized successfully, the computing
+     *            function is no longer strongly referenced and becomes eligible for
+     *            garbage collection.
+     *
+     * @param size              the size of the returned lazy list
+     * @param computingFunction to invoke whenever an element is first accessed
+     *                          (may not return {@code null})
+     * @param <E>               the type of elements in the returned list
+     * @throws IllegalArgumentException if the provided {@code size} is negative.
+     *
+     * @see LazyConstant
+     * @since 26
+     */
+    @PreviewFeature(feature = PreviewFeature.Feature.LAZY_CONSTANTS)
+    static <E> List<E> ofLazy(int size,
+                              IntFunction<? extends E> computingFunction) {
+        Utils.checkNonNegativeArgument(size, "size");
+        Objects.requireNonNull(computingFunction);
+        // A computed list is not Serializable, so we cannot return `List.of()` if `size == 0`
+        return LazyCollections.ofLazyList(size, computingFunction);
+    }
+
 }

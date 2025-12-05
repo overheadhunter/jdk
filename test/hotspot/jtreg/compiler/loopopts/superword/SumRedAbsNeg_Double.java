@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,7 @@
  * @bug 8138583
  * @summary Add C2 AArch64 Superword support for scalar sum reduction optimizations : double abs & neg test
  * @library /test/lib /
- * @run driver compiler.loopopts.superword.SumRedAbsNeg_Double
+ * @run driver/timeout=480 compiler.loopopts.superword.SumRedAbsNeg_Double
  */
 
 package compiler.loopopts.superword;
@@ -92,7 +92,7 @@ public class SumRedAbsNeg_Double {
        (with or without store) in SuperWord::profitable. */
     @Test
     @IR(applyIf = {"SuperWordReductions", "false"},
-        failOn = {IRNode.ADD_REDUCTION_VD, IRNode.ABS_V, IRNode.NEG_V})
+        failOn = {IRNode.ADD_REDUCTION_VD, IRNode.ABS_VD, IRNode.NEG_VD})
     public static double sumReductionImplement(
             double[] a,
             double[] b,

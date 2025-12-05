@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2022, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,7 @@
  */
 package jdk.internal.classfile.impl;
 
-import jdk.internal.classfile.instruction.LineNumber;
+import java.lang.classfile.instruction.LineNumber;
 
 public final class LineNumberImpl
         extends AbstractElement
@@ -43,7 +43,7 @@ public final class LineNumberImpl
     }
 
     public static LineNumber of(int line) {
-        return (line < INTERN_LIMIT)
+        return (Util.checkU2(line, "line number") < INTERN_LIMIT)
                ? internCache[line]
                : new LineNumberImpl(line);
     }

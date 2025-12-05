@@ -21,20 +21,15 @@
  * questions.
  */
 
-import com.sun.net.httpserver.HttpContext;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsParameters;
-import com.sun.net.httpserver.HttpsServer;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.Writer;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Proxy;
@@ -42,9 +37,7 @@ import java.net.ProxySelector;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
-import java.security.NoSuchAlgorithmException;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -72,11 +65,6 @@ public class ProxyTest2 {
 
     static {
         try {
-            HttpsURLConnection.setDefaultHostnameVerifier(new HostnameVerifier() {
-                    public boolean verify(String hostname, SSLSession session) {
-                        return true;
-                    }
-                });
             SSLContext.setDefault(new SimpleSSLContext().get());
         } catch (IOException ex) {
             throw new ExceptionInInitializerError(ex);
@@ -187,13 +175,14 @@ public class ProxyTest2 {
                 public void run() {
                     try {
                         try {
-                            int c;
-                            while ((c = is.read()) != -1) {
-                                os.write(c);
+                            int len;
+                            byte[] buf = new byte[16 * 1024];
+                            while ((len = is.read(buf)) != -1) {
+                                os.write(buf, 0, len);
                                 os.flush();
                                 // if DEBUG prints a + or a - for each transferred
                                 // character.
-                                if (DEBUG) System.out.print(tag);
+                                if (DEBUG) System.out.print(String.valueOf(tag).repeat(len));
                             }
                             is.close();
                         } finally {
@@ -333,17 +322,6 @@ public class ProxyTest2 {
             ss.close();
         }
 
-    }
-
-    static class Configurator extends HttpsConfigurator {
-        public Configurator(SSLContext ctx) {
-            super(ctx);
-        }
-
-        @Override
-        public void configure (HttpsParameters params) {
-            params.setSSLParameters (getSSLContext().getSupportedSSLParameters());
-        }
     }
 
 }

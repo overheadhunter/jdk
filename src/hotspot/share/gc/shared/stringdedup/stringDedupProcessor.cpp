@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2021, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,6 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "classfile/javaClasses.inline.hpp"
 #include "classfile/stringTable.hpp"
 #include "gc/shared/oopStorage.hpp"
@@ -34,10 +33,11 @@
 #include "gc/shared/stringdedup/stringDedupStorageUse.hpp"
 #include "gc/shared/stringdedup/stringDedupTable.hpp"
 #include "logging/log.hpp"
-#include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
+#include "nmt/memTag.hpp"
 #include "oops/access.inline.hpp"
-#include "runtime/atomic.hpp"
+#include "runtime/atomicAccess.hpp"
+#include "runtime/cpuTimeCounters.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/mutexLocker.hpp"
 #include "utilities/debug.hpp"
@@ -64,6 +64,7 @@ StringDedup::Processor::Processor() : _thread(nullptr) {}
 
 void StringDedup::Processor::initialize() {
   _processor = new Processor();
+  CPUTimeCounters::create_counter(CPUTimeGroups::CPUTimeType::conc_dedup);
 }
 
 void StringDedup::Processor::wait_for_requests() const {
@@ -74,7 +75,7 @@ void StringDedup::Processor::wait_for_requests() const {
   {
     ThreadBlockInVM tbivm(_thread);
     MonitorLocker ml(StringDedup_lock, Mutex::_no_safepoint_check_flag);
-    OopStorage* storage = Atomic::load(&_storage_for_requests)->storage();
+    OopStorage* storage = AtomicAccess::load(&_storage_for_requests)->storage();
     while ((storage->allocation_count() == 0) &&
            !Table::is_dead_entry_removal_needed()) {
       ml.wait();
@@ -82,7 +83,7 @@ void StringDedup::Processor::wait_for_requests() const {
   }
   // Swap the request and processing storage objects.
   log_trace(stringdedup)("swapping request storages");
-  _storage_for_processing = Atomic::xchg(&_storage_for_requests, _storage_for_processing);
+  _storage_for_processing = AtomicAccess::xchg(&_storage_for_requests, _storage_for_processing);
   GlobalCounter::write_synchronize();
   // Wait for the now current processing storage object to no longer be used
   // by an in-progress GC.  Again here, the num-dead notification from the
@@ -187,16 +188,18 @@ void StringDedup::Processor::run(JavaThread* thread) {
     cleanup_table(false /* grow_only */, StringDeduplicationResizeALot /* force */);
     _cur_stat.report_active_end();
     log_statistics();
+    if (UsePerfData && os::is_thread_cpu_time_supported()) {
+      ThreadTotalCPUTimeClosure tttc(CPUTimeGroups::CPUTimeType::conc_dedup);
+      tttc.do_thread(thread);
+    }
   }
 }
 
 void StringDedup::Processor::log_statistics() {
   _total_stat.add(&_cur_stat);
   Stat::log_summary(&_cur_stat, &_total_stat);
-  if (log_is_enabled(Debug, stringdedup)) {
-    _cur_stat.log_statistics(false);
-    _total_stat.log_statistics(true);
-    Table::log_statistics();
-  }
+  _cur_stat.emit_statistics(false /* total */);
+  _total_stat.emit_statistics(true /* total */);
+  Table::log_statistics();
   _cur_stat = Stat{};
 }

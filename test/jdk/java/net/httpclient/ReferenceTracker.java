@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -115,6 +115,14 @@ public class ReferenceTracker {
                 "outstanding operations or unreleased resources", true);
     }
 
+    public AssertionError checkFinished(Tracker tracker, long graceDelayMs) {
+        Predicate<Tracker> hasOperations = (t) -> t.getOutstandingOperations() > 0;
+        Predicate<Tracker> hasSubscribers = (t) -> t.getOutstandingSubscribers() > 0;
+        return check(tracker, graceDelayMs,
+                hasOperations.or(hasSubscribers),
+                "outstanding operations or unreleased resources", false);
+    }
+
     public AssertionError check(long graceDelayMs) {
         Predicate<Tracker> hasOperations = (t) -> t.getOutstandingOperations() > 0;
         Predicate<Tracker> hasSubscribers = (t) -> t.getOutstandingSubscribers() > 0;
@@ -123,6 +131,15 @@ public class ReferenceTracker {
                 .or(Tracker::isFacadeReferenced)
                 .or(Tracker::isSelectorAlive),
         "outstanding operations or unreleased resources", true);
+    }
+
+    public AssertionError checkClosed(long graceDelayMs) {
+        Predicate<Tracker> hasOperations = (t) -> t.getOutstandingOperations() > 0;
+        Predicate<Tracker> hasSubscribers = (t) -> t.getOutstandingSubscribers() > 0;
+        return check(graceDelayMs,
+                hasOperations.or(hasSubscribers)
+                        .or(Tracker::isSelectorAlive),
+                "outstanding operations or unreleased resources", true);
     }
 
     // This method is copied from ThreadInfo::toString, but removes the
@@ -246,6 +263,11 @@ public class ReferenceTracker {
         }
         long duration = Duration.ofNanos(System.nanoTime() - waitStart).toMillis();
         if (hasOutstanding.test(tracker)) {
+            if (i == 0 && waited == 0) {
+                // we found nothing and didn't wait expecting success, but then found
+                // something. Respin to make sure we wait.
+                return check(tracker, graceDelayMs, hasOutstanding, description, printThreads);
+            }
             StringBuilder warnings = diagnose(tracker, new StringBuilder(), hasOutstanding);
             if (hasOutstanding.test(tracker)) {
                 fail = new AssertionError(warnings.toString());
@@ -302,6 +324,11 @@ public class ReferenceTracker {
         }
         long duration = Duration.ofNanos(System.nanoTime() - waitStart).toMillis();
         if (TRACKERS.stream().anyMatch(hasOutstanding)) {
+            if (i == 0 && waited == 0) {
+                // we found nothing and didn't wait expecting success, but then found
+                // something. Respin to make sure we wait.
+                return check(graceDelayMs, hasOutstanding, description, printThreads);
+            }
             StringBuilder warnings = diagnose(new StringBuilder(), hasOutstanding);
             addSummary(warnings);
             if (TRACKERS.stream().anyMatch(hasOutstanding)) {
@@ -351,6 +378,7 @@ public class ReferenceTracker {
             warning.append("\n\tPending HTTP Requests: " + tracker.getOutstandingHttpRequests());
             warning.append("\n\tPending HTTP/1.1 operations: " + tracker.getOutstandingHttpOperations());
             warning.append("\n\tPending HTTP/2 streams: " + tracker.getOutstandingHttp2Streams());
+            warning.append("\n\tPending HTTP/3 streams: " + tracker.getOutstandingHttp3Streams());
             warning.append("\n\tPending WebSocket operations: " + tracker.getOutstandingWebSocketOperations());
             warning.append("\n\tPending TCP connections: " + tracker.getOutstandingTcpConnections());
             warning.append("\n\tPending Subscribers: " + tracker.getOutstandingSubscribers());
@@ -360,12 +388,6 @@ public class ReferenceTracker {
             System.out.println(warning.substring(pos));
             System.err.println(warning.substring(pos));
         }
-    }
-
-    private boolean isSelectorManager(Thread t) {
-        String name = t.getName();
-        if (name == null) return false;
-        return name.contains("SelectorManager");
     }
 
     // This is a slightly more permissive check than the default checks,
@@ -384,6 +406,25 @@ public class ReferenceTracker {
                         .or(hasPendingConnections)
                         .or(hasPendingSubscribers),
                 "outstanding unclosed resources", true);
+        return failed;
+    }
+
+    // This is a slightly more permissive check than the default checks,
+    // it only verifies that all CFs returned by send/sendAsync have been
+    // completed, and that all opened channels have been closed, and that
+    // the selector manager thread has exited.
+    // It doesn't check that all refcounts have reached 0.
+    // This is typically useful to only check that resources have been released.
+    public AssertionError checkShutdown(Tracker tracker, long graceDelayMs, boolean dumpThreads) {
+        Predicate<Tracker> isAlive = Tracker::isSelectorAlive;
+        Predicate<Tracker> hasPendingRequests = (t) -> t.getOutstandingHttpRequests() > 0;
+        Predicate<Tracker> hasPendingConnections = (t) -> t.getOutstandingTcpConnections() > 0;
+        Predicate<Tracker> hasPendingSubscribers = (t) -> t.getOutstandingSubscribers() > 0;
+        AssertionError failed = check(tracker, graceDelayMs,
+                isAlive.or(hasPendingRequests)
+                        .or(hasPendingConnections)
+                        .or(hasPendingSubscribers),
+                "outstanding unclosed resources", dumpThreads);
         return failed;
     }
 }

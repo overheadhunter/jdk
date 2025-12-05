@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,15 +26,23 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.lang.StackWalker.StackFrame;
 import java.net.URI;
 import java.net.http.HttpClient.Builder;
 import java.net.http.HttpClient.Version;
+import java.net.http.HttpOption.Http3DiscoveryMode;
 import java.nio.ByteBuffer;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Flow.Subscriber;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -50,6 +58,8 @@ import org.testng.annotations.BeforeTest;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 import javax.net.ssl.SSLContext;
+
+import static java.net.http.HttpOption.H3_DISCOVERY;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertThrows;
@@ -57,6 +67,7 @@ import static org.testng.Assert.assertTrue;
 
 /*
  * @test
+ * @bug 8193365 8317295
  * @summary Basic tests for Flow adapter Subscribers
  * @library /test/lib /test/jdk/java/net/httpclient/lib
  * @build jdk.httpclient.test.lib.common.HttpServerAdapters
@@ -67,14 +78,19 @@ import static org.testng.Assert.assertTrue;
 public class FlowAdapterSubscriberTest implements HttpServerAdapters {
 
     SSLContext sslContext;
-    HttpTestServer httpTestServer;     // HTTP/1.1    [ 4 servers ]
+    HttpTestServer httpTestServer;     // HTTP/1.1    [ 5 servers ]
     HttpTestServer httpsTestServer;    // HTTPS/1.1
     HttpTestServer http2TestServer;    // HTTP/2 ( h2c )
     HttpTestServer https2TestServer;   // HTTP/2 ( h2  )
+    HttpTestServer http3TestServer;    // HTTP/3 ( h3  )
     String httpURI;
     String httpsURI;
     String http2URI;
     String https2URI;
+    String http3URI;
+
+    static final StackWalker WALKER =
+            StackWalker.getInstance(StackWalker.Option.RETAIN_CLASS_REFERENCE);
 
     static final long start = System.nanoTime();
     public static String now() {
@@ -92,6 +108,7 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
                 { httpsURI  },
                 { http2URI  },
                 { https2URI },
+                { http3URI  },
         };
     }
 
@@ -102,16 +119,26 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
         if (uri.contains("/https1/")) return Version.HTTP_1_1;
         if (uri.contains("/http2/")) return Version.HTTP_2;
         if (uri.contains("/https2/")) return Version.HTTP_2;
+        if (uri.contains("/http3/")) return Version.HTTP_3;
         return null;
     }
 
     private HttpClient newHttpClient(String uri) {
-        var builder = HttpClient.newBuilder();
+        var version = Optional.ofNullable(version(uri));
+        var builder = version.isEmpty() || version.get() != Version.HTTP_3
+                ? HttpClient.newBuilder()
+                : HttpServerAdapters.createClientBuilderForH3().version(Version.HTTP_3);
         return builder.sslContext(sslContext).proxy(Builder.NO_PROXY).build();
     }
 
     private HttpRequest.Builder newRequestBuilder(String uri) {
-        return HttpRequest.newBuilder(URI.create(uri));
+        var version = Optional.ofNullable(version(uri));
+        var builder = version.isEmpty() || version.get() != Version.HTTP_3
+                ? HttpRequest.newBuilder(URI.create(uri))
+                : HttpRequest.newBuilder(URI.create(uri))
+                .version(Version.HTTP_3)
+                .setOption(H3_DISCOVERY, http3TestServer.h3DiscoveryConfig());
+        return builder;
     }
 
     @Test
@@ -264,8 +291,8 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
     }
 
     @Test(dataProvider = "uris")
-    void testCollectionWithoutFinisheBlocking(String uri) throws Exception {
-        System.out.printf(now() + "testCollectionWithoutFinisheBlocking(%s) starting%n", uri);
+    void testCollectionWithoutFinisherBlocking(String uri) throws Exception {
+        System.out.printf(now() + "testCollectionWithoutFinisherBlocking(%s) starting%n", uri);
         try (HttpClient client = newHttpClient(uri)) {
             HttpRequest request = newRequestBuilder(uri)
                     .POST(BodyPublishers.ofString("What's the craic?")).build();
@@ -455,16 +482,67 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
             HttpRequest request = newRequestBuilder(uri)
                     .POST(BodyPublishers.ofString("May the wind always be at your back.")).build();
 
-            client.sendAsync(request, BodyHandlers.fromSubscriber(BodySubscribers.ofInputStream(),
-                            ins -> {
-                                InputStream is = ins.getBody().toCompletableFuture().join();
-                                return new String(uncheckedReadAllBytes(is), UTF_8);
-                            }))
-                    .thenApply(FlowAdapterSubscriberTest::assert200ResponseCode)
-                    .thenApply(HttpResponse::body)
-                    .thenAccept(body -> assertEquals(body, "May the wind always be at your back."))
-                    .join();
+            var adaptee = BodySubscribers.ofInputStream();
+            var exec = Executors.newSingleThreadExecutor();
+
+            // Use an executor to pull on the InputStream in order to reach the
+            // point where the Subscriber gets completed and the finisher function
+            // is called. If we didn't use an executor here, the finisher function
+            // may never get called.
+            var futureResult = exec.submit(() -> uncheckedReadAllBytes(
+                    adaptee.getBody().toCompletableFuture().join()));
+            Supplier<byte[]> bytes = () -> {
+                try {
+                    return futureResult.get();
+                } catch (InterruptedException e) {
+                    throw new CompletionException(e);
+                } catch (ExecutionException e) {
+                    throw new CompletionException(e.getCause());
+                }
+            };
+
+            AtomicReference<AssertionError> failed = new AtomicReference<>();
+            Function<? super Flow.Subscriber<List<ByteBuffer>>, String> finisher = (s) -> {
+                failed.set(checkThreadAndStack());
+                return new String(bytes.get(), UTF_8);
+            };
+
+            try {
+                var cf = client.sendAsync(request, BodyHandlers.fromSubscriber(adaptee,
+                                finisher))
+                        .thenApply(FlowAdapterSubscriberTest::assert200ResponseCode)
+                        .thenApply(HttpResponse::body)
+                        .thenAccept(body -> assertEquals(body, "May the wind always be at your back."))
+                        .join();
+                var error = failed.get();
+                if (error != null) throw error;
+            } finally {
+                exec.close();
+            }
         }
+    }
+
+    static final Predicate<StackFrame> DAT = sfe ->
+            sfe.getClassName().startsWith("FlowAdapterSubscriberTest");
+    static final Predicate<StackFrame> JUC = sfe ->
+            sfe.getClassName().startsWith("java.util.concurrent");
+    static final Predicate<StackFrame> JLT = sfe ->
+            sfe.getClassName().startsWith("java.lang.Thread");
+    static final Predicate<StackFrame> RSP = sfe ->
+            sfe.getClassName().startsWith("jdk.internal.net.http.ResponseSubscribers");
+    static final Predicate<StackFrame> NotDATorJUCorJLT = Predicate.not(DAT.or(JUC).or(JLT).or(RSP));
+
+
+    AssertionError checkThreadAndStack() {
+        System.out.println("Check stack trace");
+        List<StackFrame> otherFrames = WALKER.walk(s -> s.filter(NotDATorJUCorJLT).toList());
+        if (!otherFrames.isEmpty()) {
+            System.out.println("Found unexpected trace: ");
+            otherFrames.forEach(f -> System.out.printf("\t%s%n", f));
+            return new AssertionError("Dependant action has unexpected frame in " +
+                    Thread.currentThread() + ": " + otherFrames.get(0));
+        }
+        return null;
     }
 
     /** An abstract Subscriber that converts all received data into a String. */
@@ -575,10 +653,15 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
         https2TestServer.addHandler(new HttpEchoHandler(), "/https2/echo");
         https2URI = "https://" + https2TestServer.serverAuthority() + "/https2/echo";
 
+        http3TestServer = HttpTestServer.create(Http3DiscoveryMode.HTTP_3_URI_ONLY, sslContext);
+        http3TestServer.addHandler(new HttpEchoHandler(), "/http3/echo");
+        http3URI = "https://" + http3TestServer.serverAuthority() + "/http3/echo";
+
         httpTestServer.start();
         httpsTestServer.start();
         http2TestServer.start();
         https2TestServer.start();
+        http3TestServer.start();
     }
 
     @AfterTest
@@ -587,6 +670,7 @@ public class FlowAdapterSubscriberTest implements HttpServerAdapters {
         httpsTestServer.stop();
         http2TestServer.stop();
         https2TestServer.stop();
+        http3TestServer.stop();
     }
 
     static class HttpEchoHandler implements HttpTestHandler {

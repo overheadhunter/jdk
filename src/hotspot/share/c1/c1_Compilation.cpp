@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,19 +22,23 @@
  *
  */
 
-#include "precompiled.hpp"
 #include "c1/c1_CFGPrinter.hpp"
 #include "c1/c1_Compilation.hpp"
 #include "c1/c1_IR.hpp"
-#include "c1/c1_LIRAssembler.hpp"
 #include "c1/c1_LinearScan.hpp"
+#include "c1/c1_LIRAssembler.hpp"
 #include "c1/c1_MacroAssembler.hpp"
 #include "c1/c1_RangeCheckElimination.hpp"
 #include "c1/c1_ValueMap.hpp"
 #include "c1/c1_ValueStack.hpp"
 #include "code/debugInfoRec.hpp"
+#include "compiler/compilationFailureInfo.hpp"
+#include "compiler/compilationLog.hpp"
+#include "compiler/compilationMemoryStatistic.hpp"
 #include "compiler/compileLog.hpp"
+#include "compiler/compiler_globals.hpp"
 #include "compiler/compilerDirectives.hpp"
+#include "compiler/compileTask.hpp"
 #include "memory/resourceArea.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/timerTrace.hpp"
@@ -54,7 +58,7 @@ typedef enum {
     _t_codeemit,
     _t_codeinstall,
   max_phase_timers
-} TimerName;
+} TimerId;
 
 static const char * timer_name[] = {
   "compile",
@@ -73,24 +77,25 @@ static const char * timer_name[] = {
 };
 
 static elapsedTimer timers[max_phase_timers];
-static int totalInstructionNodes = 0;
 
 class PhaseTraceTime: public TraceTime {
  private:
   CompileLog* _log;
-  TimerName _timer;
+  TimerId _timer_id;
+  bool _dolog;
 
  public:
-  PhaseTraceTime(TimerName timer)
-  : TraceTime("", &timers[timer], CITime || CITimeEach, Verbose),
-    _log(nullptr), _timer(timer)
+  PhaseTraceTime(TimerId timer_id)
+  : TraceTime(timer_name[timer_id], &timers[timer_id], CITime, CITimeVerbose),
+    _log(nullptr), _timer_id(timer_id), _dolog(CITimeVerbose)
   {
-    if (Compilation::current() != nullptr) {
+    if (_dolog) {
+      assert(Compilation::current() != nullptr, "sanity check");
       _log = Compilation::current()->log();
     }
 
     if (_log != nullptr) {
-      _log->begin_head("phase name='%s'", timer_name[_timer]);
+      _log->begin_head("phase name='%s'", timer_name[_timer_id]);
       _log->stamp();
       _log->end_head();
     }
@@ -98,7 +103,7 @@ class PhaseTraceTime: public TraceTime {
 
   ~PhaseTraceTime() {
     if (_log != nullptr)
-      _log->done("phase name='%s'", timer_name[_timer]);
+      _log->done("phase name='%s'", timer_name[_timer_id]);
   }
 };
 
@@ -268,8 +273,6 @@ void Compilation::emit_lir() {
     // Assign physical registers to LIR operands using a linear scan algorithm.
     allocator->do_linear_scan();
     CHECK_BAILOUT();
-
-    _max_spills = allocator->max_spills();
   }
 
   if (BailoutAfterLIR) {
@@ -307,14 +310,6 @@ void Compilation::emit_code_epilog(LIR_Assembler* assembler) {
   code_offsets->set_value(CodeOffsets::Deopt, assembler->emit_deopt_handler());
   CHECK_BAILOUT();
 
-  // Emit the MethodHandle deopt handler code (if required).
-  if (has_method_handle_invokes()) {
-    // We can use the same code as for the normal deopt handler, we
-    // just need a different entry point address.
-    code_offsets->set_value(CodeOffsets::DeoptMH, assembler->emit_deopt_handler());
-    CHECK_BAILOUT();
-  }
-
   // Emit the handler to remove the activation from the stack and
   // dispatch to the caller.
   offsets()->set_value(CodeOffsets::UnwindHandler, assembler->emit_unwind_handler());
@@ -327,7 +322,7 @@ bool Compilation::setup_code_buffer(CodeBuffer* code, int call_stub_estimate) {
   char* locs_buffer = NEW_RESOURCE_ARRAY(char, locs_buffer_size);
   code->insts()->initialize_shared_locs((relocInfo*)locs_buffer,
                                         locs_buffer_size / sizeof(relocInfo));
-  code->initialize_consts_size(Compilation::desired_max_constant_size());
+  code->initialize_consts_size(Compilation::desired_max_constant_size);
   // Call stubs + two deopt handlers (regular and MH) + exception handler
   int stub_size = (call_stub_estimate * LIR_Assembler::call_stub_size()) +
                    LIR_Assembler::exception_handler_size() +
@@ -384,14 +379,11 @@ int Compilation::compile_java_method() {
     BAILOUT_("mdo allocation failed", no_frame_size);
   }
 
-  if (method()->is_synchronized()) {
-    set_has_monitors(true);
-  }
-
   {
     PhaseTraceTime timeit(_t_buildIR);
     build_hir();
   }
+  CHECK_BAILOUT_(no_frame_size);
   if (BailoutAfterHIR) {
     BAILOUT_("Bailing out because of -XX:+BailoutAfterHIR", no_frame_size);
   }
@@ -409,6 +401,8 @@ int Compilation::compile_java_method() {
   if (_directive->DumpReplayOption) {
     env()->dump_replay_data(env()->compile_id());
   }
+
+  DEBUG_ONLY(CompilationMemoryStatistic::do_test_allocations();)
 
   {
     PhaseTraceTime timeit(_t_codeemit);
@@ -434,17 +428,21 @@ void Compilation::install_code(int frame_size) {
     has_unsafe_access(),
     SharedRuntime::is_wide_vector(max_vector_size()),
     has_monitors(),
+    has_scoped_access(),
     _immediate_oops_patched
   );
 }
 
 
 void Compilation::compile_method() {
+
   {
     PhaseTraceTime timeit(_t_setup);
 
     // setup compilation
     initialize();
+    CHECK_BAILOUT();
+
   }
 
   if (!method()->can_be_compiled()) {
@@ -485,7 +483,6 @@ void Compilation::compile_method() {
   if (log() != nullptr) // Print code cache state into compiler log
     log()->code_cache_state();
 
-  totalInstructionNodes += Instruction::number_of_instructions();
 }
 
 
@@ -562,7 +559,6 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 , _method(method)
 , _osr_bci(osr_bci)
 , _hir(nullptr)
-, _max_spills(-1)
 , _frame_map(nullptr)
 , _masm(nullptr)
 , _has_exception_handlers(false)
@@ -570,11 +566,12 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 , _has_unsafe_access(false)
 , _has_irreducible_loops(false)
 , _would_profile(false)
-, _has_method_handle_invokes(false)
 , _has_reserved_stack_access(method->has_reserved_stack_access())
-, _has_monitors(false)
+, _has_monitors(method->is_synchronized() || method->has_monitor_bytecodes())
+, _has_scoped_access(method->is_scoped())
 , _install_code(install_code)
 , _bailout_msg(nullptr)
+, _first_failure_details(nullptr)
 , _exception_info_list(nullptr)
 , _allocator(nullptr)
 , _code(buffer_blob)
@@ -587,16 +584,19 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 , _cfg_printer_output(nullptr)
 #endif // PRODUCT
 {
-  PhaseTraceTime timeit(_t_compile);
   _arena = Thread::current()->resource_area();
   _env->set_compiler_data(this);
   _exception_info_list = new ExceptionInfoList();
   _implicit_exception_table.set_size(0);
+  PhaseTraceTime timeit(_t_compile);
 #ifndef PRODUCT
   if (PrintCFGToFile) {
     _cfg_printer_output = new CFGPrinterOutput(this);
   }
 #endif
+
+  CompilationMemoryStatisticMark cmsm(directive);
+
   compile_method();
   if (bailed_out()) {
     _env->record_method_not_compilable(bailout_msg());
@@ -616,7 +616,7 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 Compilation::~Compilation() {
   // simulate crash during compilation
   assert(CICrashAt < 0 || (uintx)_env->compile_id() != (uintx)CICrashAt, "just as planned");
-
+  delete _first_failure_details;
   _env->set_compiler_data(nullptr);
 }
 
@@ -638,10 +638,20 @@ void Compilation::notice_inlined_method(ciMethod* method) {
 
 void Compilation::bailout(const char* msg) {
   assert(msg != nullptr, "bailout message must exist");
+  // record the bailout for hserr envlog
+  if (CompilationLog::log() != nullptr) {
+    CompilerThread* thread = CompilerThread::current();
+    CompileTask* task = thread->task();
+    CompilationLog::log()->log_failure(thread, task, msg, nullptr);
+  }
+
   if (!bailed_out()) {
     // keep first bailout message
     if (PrintCompilation || PrintBailouts) tty->print_cr("compilation bailout: %s", msg);
     _bailout_msg = msg;
+    if (CaptureBailoutInformation) {
+      _first_failure_details = new CompilationFailureInfo(msg);
+    }
   }
 }
 
@@ -649,7 +659,7 @@ ciKlass* Compilation::cha_exact_type(ciType* type) {
   if (type != nullptr && type->is_loaded() && type->is_instance_klass()) {
     ciInstanceKlass* ik = type->as_instance_klass();
     assert(ik->exact_klass() == nullptr, "no cha for final klass");
-    if (DeoptC1 && UseCHA && !(ik->has_subklass() || ik->is_interface())) {
+    if (UseCHA && !(ik->has_subklass() || ik->is_interface())) {
       dependency_recorder()->assert_leaf_type(ik);
       return ik;
     }
